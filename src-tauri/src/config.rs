@@ -1,62 +1,34 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::string::String;
 
-// Config may not exist, or may be old, so it's okay if these are optional
+// 旧版本配置里可能还有已废弃的字段，serde 会忽略它们。
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Configuration {
-  pub toggle_grasscutter: Option<bool>,
   pub game_install_path: Option<String>,
-  pub grasscutter_with_game: Option<bool>,
-  pub grasscutter_path: Option<String>,
-  pub java_path: Option<String>,
-  pub close_action: Option<u64>,
-  pub startup_launch: Option<bool>,
   pub last_ip: Option<String>,
   pub last_port: Option<String>,
   pub language: Option<String>,
-  pub custom_background: Option<String>,
-  pub use_theme_background: Option<bool>,
   pub cert_generated: Option<bool>,
-  pub theme: Option<String>,
-  pub https_enabled: Option<bool>,
   pub debug_enabled: Option<bool>,
   pub patch_rsa: Option<bool>,
   pub use_internal_proxy: Option<bool>,
   pub wipe_login: Option<bool>,
-  pub horny_mode: Option<bool>,
-  pub auto_mongodb: Option<bool>,
   pub un_elevated: Option<bool>,
-  pub redirect_more: Option<bool>,
   pub launch_args: Option<String>,
-  pub offline_mode: Option<bool>,
   pub show_version: Option<bool>,
-  pub profile: Option<String>,
+  pub gimi_enabled: Option<bool>,
+  pub gimi_mods_path: Option<String>,
+  pub gimi_fps: Option<u32>,
 }
 
-pub fn config_path(profile: String) -> PathBuf {
+pub fn config_path() -> PathBuf {
   let mut path = tauri::api::path::data_dir().unwrap();
   path.push("cultivation");
-  if profile.as_str() == "default" {
-    path.push("configuration.json");
-  } else {
-    path.push("profiles");
-    path.push(profile + ".json");
-  }
-
+  path.push("configuration.json");
   path
 }
 
-pub fn get_config(profile_name: String) -> Configuration {
-  let path = config_path(profile_name.clone());
-  let config = std::fs::read_to_string(path).unwrap_or("{}".to_string());
-  let config: Configuration = serde_json::from_str(&config).unwrap_or_default();
-
-  //let default = String::from("default");
-  let prof = config.profile.clone().unwrap_or_default();
-  if prof != String::from("default") && prof != profile_name.clone() {
-    return get_config(prof.clone());
-  }
-
-  config
+pub fn get_config() -> Configuration {
+  let raw = std::fs::read_to_string(config_path()).unwrap_or_else(|_| "{}".into());
+  serde_json::from_str(&raw).unwrap_or_default()
 }

@@ -2,131 +2,70 @@ import { invoke } from '@tauri-apps/api'
 import React from 'react'
 import { getConfigOption } from './configuration'
 
-interface IProps {
-  text: string
+type Dictionary = { [key: string]: unknown }
+const dictionaries = new Map<string, Promise<Dictionary>>()
+function dictionary(lang: string): Promise<Dictionary> {
+  const cached = dictionaries.get(lang)
+  if (cached) return cached
+  const pending = invoke<string>('get_lang', { lang })
+    .then((raw) => JSON.parse(raw || '{}') as Dictionary)
+    .catch((error) => {
+      dictionaries.delete(lang)
+      throw error
+    })
+  dictionaries.set(lang, pending)
+  return pending
 }
 
-interface IState {
-  language: string
-  translated_text: string
+function lookup(dict: Dictionary, key: string): string | undefined {
+  let value: unknown = dict
+  for (const segment of key.split('.')) {
+    if (!value || typeof value !== 'object') return undefined
+    value = (value as Dictionary)[segment]
+  }
+  return typeof value === 'string' ? value : undefined
 }
-
-export default class Tr extends React.Component<IProps, IState> {
-  constructor(props: IProps) {
-    super(props)
-
-    this.state = {
-      language: 'en',
-      translated_text: '',
+export async function translate(text: string): Promise<string> {
+  const lang = (await getConfigOption('language')) || 'en'
+  const [selected, fallback] = await Promise.all([dictionary(lang), dictionary('en')])
+  return lookup(selected, text) || lookup(fallback, text) || text
+}
+export default class Tr extends React.Component<{ text: string }, { translated: string }> {
+  state = { translated: '' }
+  private mounted = false
+  private revision = 0
+  componentDidMount() {
+    this.mounted = true
+    void this.refresh()
+  }
+  componentDidUpdate(previous: Readonly<{ text: string }>) {
+    if (previous.text !== this.props.text) void this.refresh()
+  }
+  componentWillUnmount() {
+    this.mounted = false
+    this.revision++
+  }
+  private async refresh() {
+    const revision = ++this.revision
+    try {
+      const translated = await translate(this.props.text)
+      if (this.mounted && revision === this.revision) this.setState({ translated })
+    } catch (error) {
+      console.error(error)
     }
   }
-
-  async componentDidMount() {
-    const { text } = this.props
-    let language = await getConfigOption('language')
-
-    // Get translation file
-    if (!language) language = 'en'
-
-    const response = await invoke('get_lang', { lang: language })
-    const default_resp = await invoke('get_lang', { lang: 'en' })
-
-    const translation_obj = JSON.parse((response as string) || '{}')
-    const default_obj = JSON.parse((default_resp as string) || '{}')
-
-    // Traversal
-    if (text.includes('.')) {
-      const keys = text.split('.')
-      let translation: string | Record<string, string> = translation_obj
-
-      for (let i = 0; i < keys.length; i++) {
-        if (!translation) {
-          translation = ''
-        } else {
-          translation = typeof translation !== 'string' ? translation[keys[i]] : (translation as string)
-        }
-      }
-
-      // If we could not find a translation, use the default one
-      if (!translation) {
-        translation = default_obj
-
-        for (let i = 0; i < keys.length; i++) {
-          if (!translation) {
-            translation = ''
-          } else {
-            translation = typeof translation !== 'string' ? translation[keys[i]] : (translation as string)
-          }
-        }
-      }
-
-      this.setState({
-        translated_text: translation as string,
-      })
-    } else {
-      this.setState({
-        translated_text: translation_obj[text] || text,
-      })
-    }
-  }
-
   render() {
-    return this.state.translated_text
+    return this.state.translated || this.props.text
   }
 }
-
-export async function getLanguages() {
-  const resp: {
-    [key: string]: string
-  } = await invoke('get_languages')
-  const lang_list: {
-    [key: string]: string
-  }[] = []
-
-  Object.keys(resp).forEach((k) => {
-    const parsed = JSON.parse(resp[k])
-
-    if (parsed.lang_name) {
-      lang_list.push({ [k.split('.json')[0]]: parsed.lang_name })
+export async function getLanguages(): Promise<{ [key: string]: string }[]> {
+  const files = await invoke<{ [key: string]: string }>('get_languages')
+  return Object.keys(files).flatMap((file) => {
+    try {
+      const parsed = JSON.parse(files[file])
+      return parsed.lang_name ? [{ [file.replace(/\.json$/, '')]: String(parsed.lang_name) }] : []
+    } catch {
+      return []
     }
   })
-
-  return lang_list
-}
-
-export async function translate(text: string) {
-  const language = (await getConfigOption('language')) || 'en'
-  const translation_json = JSON.parse((await invoke('get_lang', { lang: language })) || '{}')
-  const default_json = JSON.parse(await invoke('get_lang', { lang: 'en' }))
-
-  // Traversal
-  if (text.includes('.')) {
-    const keys = text.split('.')
-    let translation: string | Record<string, string> = translation_json
-
-    for (let i = 0; i < keys.length; i++) {
-      if (!translation) {
-        translation = ''
-      } else {
-        translation = typeof translation !== 'string' ? translation[keys[i]] : (translation as string)
-      }
-    }
-
-    // If we could not find a translation, use the default one
-    if (!translation) {
-      translation = default_json
-
-      for (let i = 0; i < keys.length; i++) {
-        if (!translation) {
-          translation = ''
-        } else {
-          translation = typeof translation !== 'string' ? translation[keys[i]] : (translation as string)
-        }
-      }
-    }
-
-    return translation
-  } else {
-    return translation_json[text] || ''
-  }
 }

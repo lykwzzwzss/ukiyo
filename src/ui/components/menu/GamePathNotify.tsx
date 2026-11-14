@@ -1,5 +1,4 @@
 import React from 'react'
-import './GamePathNotify.css'
 import Tr from '../../../utils/language'
 
 export default class GamePathNotify extends React.Component {

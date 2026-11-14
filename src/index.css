@@ -1,9 +1,22 @@
-body {
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
-  font-family: 'MiHoYo_SDK_Web', 'Helvetica Neue', BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu',
-    'Cantarell', 'Fira Sans', 'Droid Sans', sans-serif;
+}
+
+body {
+  background: #0b0e14;
+  color: #f0e8d8;
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', 'HYWenHei-85W', 'Segoe UI', 'Helvetica Neue',
+    sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
 }
 
 code {

@@ -3,162 +3,120 @@ import React from 'react'
 // Major Components
 import TopBar from './components/TopBar'
 import ServerLaunchSection from './components/ServerLaunchSection'
-import MainProgressBar from './components/common/MainProgressBar'
-import Options, { GrasscutterElevation } from './components/menu/Options'
-import MiniDialog from './components/MiniDialog'
-import DownloadList from './components/common/DownloadList'
-import Downloads from './components/menu/Downloads'
-import NewsSection from './components/news/NewsSection'
-import Game from './components/menu/Game'
-import RightBar from './components/RightBar'
-import { ExtrasMenu } from './components/menu/ExtrasMenu'
-import Notification from './components/common/Notification'
+import Options from './components/menu/Options'
 import GamePathNotify from './components/menu/GamePathNotify'
+import GimiPanel from './components/GimiPanel'
+import GimiMark from './components/GimiMark'
 
-import { getConfig, getConfigOption, setConfigOption } from '../utils/configuration'
+import { getConfigOption, setConfigOption } from '../utils/configuration'
 import { invoke } from '@tauri-apps/api'
-import { getVersion } from '@tauri-apps/api/app'
 import { listen } from '@tauri-apps/api/event'
 import { dataDir } from '@tauri-apps/api/path'
 import { appWindow } from '@tauri-apps/api/window'
-import { unpatchGame } from '../utils/rsa'
-import DownloadHandler from '../utils/download'
+import Tr from '../utils/language'
 
 // Graphics
 import cogBtn from '../resources/icons/cog.svg'
-import downBtn from '../resources/icons/download.svg'
-import wrenchBtn from '../resources/icons/wrench.svg'
-
-interface IProps {
-  downloadHandler: DownloadHandler
-}
+import fushiWordmark from '../resources/fushi-wordmark.svg'
 
 interface IState {
-  isDownloading: boolean
   optionsOpen: boolean
-  miniDownloadsOpen: boolean
-  downloadsOpen: boolean
-  gameDownloadsOpen: boolean
-  extrasOpen: boolean
-  migotoSet: boolean
-  playGame: (exe?: string, proc_name?: string) => void
-  notification: React.ReactElement | null
+  gimiOpen: boolean
   isGamePathSet: boolean
-  game_install_path: string
-  platform: string
+  panelsReady: boolean
 }
 
-export class Main extends React.Component<IProps, IState> {
-  constructor(props: IProps) {
+export class Main extends React.Component<Readonly<unknown>, IState> {
+  constructor(props: Readonly<unknown>) {
     super(props)
     this.state = {
-      isDownloading: false,
       optionsOpen: false,
-      miniDownloadsOpen: false,
-      downloadsOpen: false,
-      gameDownloadsOpen: false,
-      extrasOpen: false,
-      migotoSet: false,
-      playGame: () => {
-        alert('Error launching game')
-      },
-      notification: null,
+      gimiOpen: false,
       isGamePathSet: true,
-      game_install_path: '',
-      platform: '',
+      panelsReady: false,
     }
+  }
 
-    listen('lang_error', (payload) => {
-      console.log(payload)
-    })
+  private lifecycle = 0
+  private listeners = new Set<() => void>()
+  private minimizedForGame = false
+  private preloadFrame?: number
+  private preloadIdle?: number
+  private preloadTimer?: ReturnType<typeof setTimeout>
 
-    listen('jar_extracted', ({ payload }: { payload: string }) => {
-      setConfigOption('grasscutter_path', payload)
-    })
+  componentWillUnmount() {
+    this.lifecycle++
+    this.listeners.forEach((unlisten) => unlisten())
+    this.listeners.clear()
+    if (this.preloadFrame !== undefined) window.cancelAnimationFrame(this.preloadFrame)
+    if (this.preloadIdle !== undefined) window.cancelIdleCallback(this.preloadIdle)
+    if (this.preloadTimer !== undefined) clearTimeout(this.preloadTimer)
+  }
 
-    listen('migoto_extracted', async ({ payload }: { payload: string }) => {
-      await setConfigOption('migoto_path', payload)
-      this.setState({ migotoSet: true })
-      window.location.reload()
-    })
-
-    // Emitted for rsa replacing-purposes
-    listen('game_closed', async () => {
-      const wasPatched = await getConfigOption('patch_rsa')
-
-      if (wasPatched) {
-        const unpatched = await unpatchGame()
-
-        if (unpatched) {
-          alert(`Could not unpatch game! (Delete version.dll in your game folder)`)
-        }
+  private async updateGameWindow(running: boolean) {
+    if (running && !this.minimizedForGame) {
+      this.minimizedForGame = true
+      try {
+        await appWindow.minimize()
+      } catch (error) {
+        this.minimizedForGame = false
+        console.error(error)
       }
-    })
-
-    // Emitted for automatic processes
-    listen('grasscutter_closed', async () => {
-      const autoService = await getConfigOption('auto_mongodb')
-      const config = await getConfig()
-
-      if (autoService) {
-        await invoke('stop_service', { service: 'MongoDB' })
-      }
-
-      if ((await invoke('get_platform')) === 'linux') {
-        switch (config.grasscutter_elevation) {
-          case GrasscutterElevation.None:
-            break
-
-          case GrasscutterElevation.Capability:
-            await invoke('jvm_remove_cap', {
-              javaPath: config.java_path,
-            })
-            break
-
-          default:
-            console.error('Invalid grasscutter_elevation')
-            break
-        }
-      }
-    })
-
-    let min = false
-
-    // periodically check if we need to min/max based on whether the game is open
-    setInterval(async () => {
-      const gameOpen = await invoke('is_game_running')
-
-      if (gameOpen && !min) {
-        appWindow.minimize()
-        min = true
-      } else if (!gameOpen && min) {
-        appWindow.unminimize()
-        min = false
-      }
-    }, 1000)
-
-    this.openExtrasMenu = this.openExtrasMenu.bind(this)
+    } else if (!running && this.minimizedForGame) {
+      this.minimizedForGame = false
+      await appWindow.unminimize().catch(console.error)
+    }
   }
 
   async componentDidMount() {
+    const lifecycle = ++this.lifecycle
+    // Let the main window paint before building the two hidden panels.
+    this.preloadFrame = window.requestAnimationFrame(() => {
+      const warm = () => {
+        if (this.lifecycle === lifecycle && !this.state.panelsReady) this.setState({ panelsReady: true })
+      }
+      if (window.requestIdleCallback) this.preloadIdle = window.requestIdleCallback(warm, { timeout: 500 })
+      else this.preloadTimer = setTimeout(warm, 100)
+    })
+    let changes = 0
+    const subscriptions = await Promise.all([
+      listen('lang_error', (event) => console.error(event.payload)),
+      listen<boolean>('game_state_changed', (event) => {
+        changes++
+        if (this.lifecycle === lifecycle) void this.updateGameWindow(event.payload)
+      }),
+      listen('game_closed', () => {
+        changes++
+        if (this.lifecycle === lifecycle) void this.updateGameWindow(false)
+      }),
+    ])
+    if (this.lifecycle !== lifecycle) {
+      subscriptions.forEach((unlisten) => unlisten())
+      return
+    }
+    subscriptions.forEach((unlisten) => this.listeners.add(unlisten))
+    const initialChanges = changes
+    const running = await invoke<boolean>('is_game_running')
+    if (this.lifecycle !== lifecycle) return
+    if (changes === initialChanges) await this.updateGameWindow(running)
+
     const game_path = await getConfigOption('game_install_path')
     const cert_generated = await getConfigOption('cert_generated')
+    const platform = await invoke('get_platform')
 
-    this.setState({
-      game_install_path: game_path,
-    })
+    let isGamePathSet = !!game_path
 
-    if (this.state.game_install_path === '') {
-      this.setState({ isGamePathSet: false })
+    // 游戏路径失效时清空，提示用户重新选择
+    if (game_path && platform === 'windows') {
+      const game_exists = (await invoke('dir_exists', { path: game_path })) as boolean
+      if (!game_exists) {
+        await setConfigOption('game_install_path', '')
+        isGamePathSet = false
+      }
     }
 
-    this.setState({
-      migotoSet: !!(await getConfigOption('migoto_path')),
-    })
-
-    this.setState({
-      platform: await invoke('get_platform'),
-    })
+    if (this.lifecycle !== lifecycle) return
+    this.setState({ isGamePathSet })
 
     if (!cert_generated) {
       // Generate the certificate
@@ -168,85 +126,6 @@ export class Main extends React.Component<IProps, IState> {
 
       await setConfigOption('cert_generated', true)
     }
-
-    // Ensure old configs are updated to use RSA
-    const updatedProfile = await getConfigOption('profile')
-    await setConfigOption('profile', updatedProfile)
-    const updatedConfig = await getConfigOption('patch_rsa')
-    await setConfigOption('patch_rsa', updatedConfig)
-
-    // Update launch args to allow launching when updating from old versions
-    await setConfigOption('launch_args', await getConfigOption('launch_args'))
-
-    if (!(await getConfigOption('offline_mode'))) {
-      // Get latest version and compare to this version
-      const latestVersion: {
-        tag_name: string
-        link: string
-      } = await invoke('get_latest_release')
-      const tagName = latestVersion?.tag_name.replace(/[^\d.]/g, '')
-
-      // Check if tagName is different than current version
-      if (tagName && tagName !== (await getVersion())) {
-        // Display notification of new release
-        this.setState({
-          notification: (
-            <>
-              Cultivation{' '}
-              <a href="#" onClick={() => invoke('open_in_browser', { url: latestVersion.link })}>
-                {latestVersion?.tag_name}
-              </a>{' '}
-              is now available!
-            </>
-          ),
-        })
-
-        setTimeout(() => {
-          this.setState({
-            notification: null,
-          })
-        }, 6000)
-      }
-    }
-
-    // Period check to only show progress bar when downloading files
-    setInterval(() => {
-      this.setState({
-        isDownloading: this.props.downloadHandler.getDownloads().filter((d) => d.status !== 'finished')?.length > 0,
-      })
-    }, 1000)
-  }
-
-  async openExtrasMenu(playGame: () => void) {
-    this.setState({
-      extrasOpen: true,
-      playGame,
-    })
-  }
-
-  async componentDidUpdate(prevProps: Readonly<IProps>, prevState: Readonly<IState>) {
-    const game_path = await getConfigOption('game_install_path')
-
-    // Check if game exists at set location
-    const game_exists: boolean = (await invoke('dir_exists', {
-      path: game_path,
-    })) as boolean
-
-    // Set no game path so the user understands it doesn't exist there
-    if (!game_exists && this.state.platform === 'windows') {
-      setConfigOption('game_install_path', '')
-    }
-
-    //if previous state is not equal the current one - update the game_install_path to be the current game path
-    if (prevState.game_install_path != game_path) {
-      this.setState({
-        game_install_path: game_path,
-      })
-
-      this.state.game_install_path === ''
-        ? this.setState({ isGamePathSet: false })
-        : this.setState({ isGamePathSet: true })
-    }
   }
 
   render() {
@@ -255,113 +134,61 @@ export class Main extends React.Component<IProps, IState> {
         <TopBar>
           <div
             id="settingsBtn"
-            onClick={() => this.setState({ optionsOpen: !this.state.optionsOpen })}
             className="TopButton"
+            onClick={() => this.setState((state) => ({ optionsOpen: !state.optionsOpen, gimiOpen: false, panelsReady: true }))}
           >
             <img src={cogBtn} alt="settings" />
           </div>
           <div
-            id="downloadsBtn"
+            id="gimiBtn"
             className="TopButton"
-            onClick={() => this.setState({ downloadsOpen: !this.state.downloadsOpen })}
+            title="模型"
+            onClick={() => this.setState((state) => ({ gimiOpen: !state.gimiOpen, optionsOpen: false, panelsReady: true }))}
           >
-            <img src={downBtn} alt="downloads" />
+            <GimiMark />
           </div>
-          {this.state.migotoSet && (
-            <div
-              id="modsBtn"
-              onClick={() => {
-                // Create and dispatch a custom "openMods" event
-                const event = new CustomEvent('changePage', { detail: 'modding' })
-                window.dispatchEvent(event)
-              }}
-              className="TopButton"
-            >
-              <img src={wrenchBtn} alt="mods" />
-            </div>
-          )}
-          {/* <div id="gameBtn" className="TopButton" onClick={() => this.setState({ gameDownloadsOpen: !this.state.gameDownloadsOpen })}>
-            <img src={gameBtn} alt="game" />
-          </div> */}
         </TopBar>
 
-        <Notification show={!!this.state.notification}>{this.state.notification}</Notification>
+        {this.state.isGamePathSet ? null : <GamePathNotify />}
 
-        {this.state.isGamePathSet ? <></> : <GamePathNotify />}
-
-        <RightBar />
-
-        <NewsSection />
-
-        {
-          // Extras section
-          this.state.extrasOpen && (
-            <ExtrasMenu closeFn={() => this.setState({ extrasOpen: false })} playGame={this.state.playGame}>
-              Yo
-            </ExtrasMenu>
-          )
-        }
-
-        {
-          // Mini downloads section
-          this.state.miniDownloadsOpen ? (
-            <div className="MiniDownloads" id="miniDownloadContainer">
-              <MiniDialog
-                title="Downloads"
-                closeFn={() => {
-                  this.setState({ miniDownloadsOpen: false })
-                }}
-              >
-                <DownloadList downloadManager={this.props.downloadHandler} />
-              </MiniDialog>
-              <div className="arrow-down"></div>
+        <section className="HeroLayer">
+          <div className="Hero">
+            <h1 className="HeroTitle" aria-label="浮世">
+              <img className="HeroWordmark" src={fushiWordmark} alt="" aria-hidden="true" draggable={false} />
+            </h1>
+            <div className="HeroRule">
+              <span className="HeroRuleLine" />
+              <span className="HeroRuleDiamond" />
+              <span className="HeroRuleLine" />
             </div>
-          ) : null
-        }
-
-        {
-          // Download menu
-          this.state.downloadsOpen ? (
-            <Downloads
-              downloadManager={this.props.downloadHandler}
-              closeFn={() => this.setState({ downloadsOpen: false })}
-            />
-          ) : null
-        }
-
-        {
-          // Options menu
-          this.state.optionsOpen ? (
-            <Options
-              downloadManager={this.props.downloadHandler}
-              closeFn={async () => {
-                this.setState({ optionsOpen: !this.state.optionsOpen })
-                this.setState({ migotoSet: !!(await getConfigOption('migoto_path')) })
-              }}
-            />
-          ) : null
-        }
-
-        {
-          // Game downloads menu
-          this.state.gameDownloadsOpen ? (
-            <Game
-              downloadManager={this.props.downloadHandler}
-              closeFn={() => this.setState({ gameDownloadsOpen: false })}
-            />
-          ) : null
-        }
-
-        <div className="BottomSection" id="bottomSectionContainer">
-          <ServerLaunchSection openExtras={this.openExtrasMenu} downloadHandler={this.props.downloadHandler} />
-
-          <div
-            id="DownloadProgress"
-            onClick={() => this.setState({ miniDownloadsOpen: !this.state.miniDownloadsOpen })}
-          >
-            {this.state.isDownloading ? <MainProgressBar downloadManager={this.props.downloadHandler} /> : null}
+            <p className="HeroSubtitle">
+              <Tr text="main.hero_subtitle" />
+            </p>
+            <div className="HeroChips">
+              <span className="StatusChip">
+                <i className="StatusChipDot" />
+                <Tr text="main.chip_gc" />
+              </span>
+              <span className="StatusChip">
+                <i className="StatusChipDot" />
+                <Tr text="main.chip_proxy" />
+              </span>
+            </div>
           </div>
-        </div>
+        </section>
+
+        <ServerLaunchSection />
+
+        {this.state.panelsReady ? <GimiPanel visible={this.state.gimiOpen} onClose={() => this.setState({ gimiOpen: false })} /> : null}
+
+        {this.state.panelsReady ? (
+          <Options
+            visible={this.state.optionsOpen}
+            closeFn={() => {
+              this.setState({ optionsOpen: false })
+            }}
+          />
+        ) : null}
       </>
     )
   }

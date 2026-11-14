@@ -1,0 +1,32 @@
+/* ---------- 环境装饰层（星砂 + 菱形碎片） ---------- */
+
+.Ambient {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  animation: ambientIn 1.5s ease-out 0.1s both;
+}
+
+.Ambient canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes ambientIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .Ambient {
+    animation: none;
+    opacity: 1;
+  }
+}

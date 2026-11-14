@@ -3,23 +3,7 @@ body {
   user-select: none;
   height: 100vh;
   overflow: hidden;
-}
-
-select {
-  width: 217px;
-  border: none;
-  border-bottom: 2px solid #cecece;
-
-  padding-right: 16px;
-
-  text-decoration-color: #000;
-
-  transition: border-bottom-color 0.1s ease-in-out;
-}
-
-select:focus {
-  outline: none;
-  border-bottom-color: #ffd326;
+  margin: 0;
 }
 
 #root,
@@ -28,100 +12,450 @@ select:focus {
 }
 
 .App {
-  background-size: cover !important;
-  background-position: center !important;
+  position: relative;
+  overflow: hidden;
+  background: #0b0e14;
+  color: #f0e8d8;
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', 'HYWenHei-85W', 'Segoe UI', sans-serif;
 }
 
-.TopButton {
-  height: 60%;
-  margin: 0px 10px;
+/* ---------- 背景层 ---------- */
 
-  color: #c5c5c5;
-  transition: color 0.1s ease-in-out;
-}
-
-.TopButton span {
-  display: inline-block;
-  line-height: normal;
-  border-bottom: 1px solid #c5c5c5;
-}
-
-.TopButton img {
-  filter: invert(95%) sepia(0%) saturate(18%) hue-rotate(153deg) brightness(88%) contrast(81%);
-
-  transition: filter 0.1s ease-in-out;
-}
-
-.TopButton:hover {
-  color: #fff;
-  cursor: pointer;
-}
-
-.TopButton:hover img {
-  filter: invert(100%) sepia(0%) saturate(18%) hue-rotate(153deg) brightness(100%) contrast(100%);
-  cursor: pointer;
-}
-
-.TopButton img {
-  height: 80%;
-  vertical-align: super;
-}
-
-#DownloadProgress {
+.Wallpaper {
   position: absolute;
-  transform: translate(0%, -50%);
-  top: 50%;
-  left: 5%;
-  width: 50%;
+  /* 四周多留 8px，供鼠标视差平移时使用，避免露边 */
+  inset: -8px;
+  z-index: 0;
+  isolation: isolate;
+  overflow: hidden;
 }
 
-.MiniDownloads {
+.WallpaperSlide {
   position: absolute;
-  top: 40%;
-  left: 12%;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  transform: scale(1);
+  transition: opacity 1.3s ease-in-out;
 }
 
-.arrow-down {
-  width: 0;
-  height: 0;
-  border-left: 50px solid transparent;
-  border-right: 50px solid transparent;
-  border-top: 50px solid transparent;
-
-  /* Colored section */
-  border-top: 50px solid #fff;
-
-  position: fixed;
-  top: 73%;
-  left: 15%;
-
-  z-index: 99;
+.WallpaperSlide.intro {
+  opacity: 1;
+  transform: scale(1);
+  z-index: 2;
 }
 
-.BottomSection {
+.WallpaperSlide.previous {
+  opacity: 1;
+  transform: scale(1.1);
+  z-index: 1;
+}
+
+.WallpaperSlide.active {
+  opacity: 1;
+  z-index: 2;
+  transform: scale(1.1);
+  transition: opacity 1.3s ease-in-out, transform 9s linear;
+}
+
+.AppVeil {
   position: absolute;
-  bottom: 0%;
-  left: 50%;
-  transform: translate(-50%, 0%);
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+      90deg,
+      rgba(9, 12, 18, 0.94) 0%,
+      rgba(9, 12, 18, 0.74) 30%,
+      rgba(9, 12, 18, 0.28) 56%,
+      rgba(9, 12, 18, 0.7) 100%
+    ),
+    radial-gradient(120% 100% at 15% 45%, rgba(22, 28, 40, 0.35), transparent 62%);
+}
 
-  width: 100%;
-  height: 160px;
+.AppGlow {
+  position: absolute;
+  right: -12%;
+  top: -25%;
+  width: 75%;
+  height: 130%;
+  background: radial-gradient(closest-side, rgba(232, 201, 143, 0.2), transparent 70%);
+  filter: blur(24px);
+  animation: glowPulse 9s ease-in-out infinite;
+  pointer-events: none;
+}
 
+/* ---------- 主视觉 ---------- */
+
+.HeroLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding-left: 7%;
+  pointer-events: none;
+}
+
+/* 主视觉本身不能带 transform / animation：
+   否则会成为 backdrop-filter 的 backdrop root，让标签的高斯模糊失效 */
+.Hero {
+  max-width: 46%;
+  pointer-events: auto;
+}
+
+.HeroTitle,
+.HeroRule,
+.HeroSubtitle {
+  animation: heroFade 0.9s ease-out both;
+}
+
+.HeroRule {
+  animation-delay: 0.06s;
+}
+
+.HeroSubtitle {
+  animation-delay: 0.12s;
+}
+
+.HeroSubtitle {
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8), 0 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.HeroTitle {
   margin: 0;
-  padding: 0;
-
-  backdrop-filter: blur(10px);
-  box-shadow: inset 0px 5px 12px -3px rgb(0, 0, 0, 0.43);
+  line-height: 1;
+  filter: drop-shadow(0 6px 22px rgba(0, 0, 0, 0.55));
 }
 
-@media (max-height: 580px) {
-  .BottomSection {
-    height: 150px;
+.HeroWordmark {
+  display: block;
+  width: 300px;
+  max-width: 100%;
+  height: auto;
+  /* 预留 330x150 的比例，避免 SVG 加载完成前高度为 0 导致主视觉突然上移 */
+  aspect-ratio: 330 / 150;
+  user-select: none;
+}
+
+.HeroRule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0 18px;
+  width: 78%;
+}
+
+.HeroRuleLine {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(232, 201, 143, 0.75), rgba(232, 201, 143, 0.08));
+}
+
+.HeroRuleLine:last-child {
+  background: linear-gradient(90deg, rgba(232, 201, 143, 0.08), rgba(232, 201, 143, 0.75));
+}
+
+.HeroRuleDiamond {
+  width: 7px;
+  height: 7px;
+  background: #e6c98f;
+  transform: rotate(45deg);
+  box-shadow: 0 0 12px rgba(232, 201, 143, 0.8);
+}
+
+.HeroSubtitle {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: rgba(240, 232, 216, 0.72);
+}
+
+.HeroChips {
+  display: flex;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.StatusChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: rgba(240, 232, 216, 0.82);
+  border: 1px solid rgba(232, 201, 143, 0.28);
+  border-radius: 999px;
+  background: rgba(15, 19, 28, 0.2);
+  backdrop-filter: blur(32px) saturate(1.5);
+  -webkit-backdrop-filter: blur(32px) saturate(1.5);
+  box-shadow: inset 0 1px 0 rgba(255, 246, 226, 0.1), 0 4px 16px rgba(0, 0, 0, 0.14);
+}
+
+.StatusChipDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e6c98f;
+  box-shadow: 0 0 8px rgba(232, 201, 143, 0.9);
+  animation: statusPulse 2.4s ease-in-out infinite;
+}
+
+/* ---------- 连接面板 ---------- */
+
+.ConnectPanel .BigButton {
+  height: 46px;
+  font-size: 15px;
+  letter-spacing: 0.16em;
+}
+
+.ConnectPanel .BigButton::after {
+  animation-duration: 5.2s;
+}
+
+.ConnectPanel {
+  position: absolute;
+  z-index: 2;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 336px;
+  box-sizing: border-box;
+  padding: 20px 22px 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(232, 201, 143, 0.3);
+  background: linear-gradient(158deg, rgba(26, 32, 46, 0.46) 0%, rgba(12, 16, 24, 0.4) 100%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 50px rgba(232, 201, 143, 0.03);
+  backdrop-filter: blur(26px) saturate(1.25);
+  -webkit-backdrop-filter: blur(26px) saturate(1.25);
+  animation: panelIn 0.8s cubic-bezier(0.19, 1, 0.22, 1) 0.12s both;
+}
+
+.ConnectPanel::before,
+.ConnectPanel::after {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-color: rgba(232, 201, 143, 0.75);
+  border-style: solid;
+  pointer-events: none;
+}
+
+.ConnectPanel::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.ConnectPanel::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+.ConnectHeader {
+  margin-bottom: 4px;
+}
+
+.ConnectTitle {
+  font-size: 17px;
+  letter-spacing: 0.16em;
+  color: #f4e9d3;
+}
+
+.ConnectSub {
+  margin-top: 4px;
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  color: rgba(232, 201, 143, 0.55);
+}
+
+.ConnectRule {
+  height: 1px;
+  margin: 12px 0 4px;
+  background: linear-gradient(90deg, rgba(232, 201, 143, 0.55), rgba(232, 201, 143, 0.03));
+}
+
+.FieldLabel {
+  display: block;
+  margin: 10px 0 5px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: rgba(240, 232, 216, 0.55);
+}
+
+.ConnectPanel .TextInput {
+  height: 38px;
+  font-size: 13px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ConnectPanel .TextInput:focus {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ConnectStatus {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(240, 232, 216, 0.58);
+}
+
+.StatusDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #9fe0a8;
+  box-shadow: 0 0 10px rgba(159, 224, 168, 0.8);
+  animation: statusPulse 2.4s ease-in-out infinite;
+}
+
+/* ---------- 动画 ---------- */
+
+@keyframes wallpaperFade {
+  from {
+    opacity: 0;
+    filter: blur(12px);
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
   }
 }
 
-@media (max-height: 500px) {
-  .BottomSection {
-    height: 140px;
+@keyframes wallpaperBreath {
+  from {
+    transform: scale(1);
   }
+  to {
+    transform: scale(1.045);
+  }
+}
+
+@keyframes glowPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes statusPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes heroFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translate(26px, -50%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+@keyframes sheen {
+  0%,
+  62% {
+    left: -120%;
+  }
+  82%,
+  100% {
+    left: 130%;
+  }
+}
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 1120px) {
+  .HeroTitle {
+    font-size: 56px;
+  }
+
+  .ConnectPanel {
+    width: 336px;
+    right: 26px;
+    padding: 20px 22px 18px;
+  }
+}
+
+@media (max-width: 940px) {
+  .HeroLayer {
+    padding-left: 5%;
+  }
+
+  .Hero {
+    max-width: 40%;
+  }
+
+  .HeroTitle {
+    font-size: 46px;
+  }
+
+  .HeroSubtitle {
+    font-size: 13px;
+  }
+
+  .ConnectPanel {
+    width: 318px;
+    right: 20px;
+  }
+}
+
+@media (max-height: 640px) {
+  .HeroTitle {
+    font-size: 48px;
+  }
+
+  .HeroChips {
+    margin-top: 16px;
+  }
+
+  .ConnectPanel {
+    padding-top: 16px;
+    padding-bottom: 14px;
+  }
+
+  .ConnectRule {
+    margin: 13px 0 14px;
+  }
+
+  .ConnectStatus {
+    margin: 14px 0 12px;
+  }
+}
+
+.WallpaperSlide.active,
+.WallpaperSlide.previous {
+  will-change: opacity, transform;
+}
+.animations-paused * {
+  animation-play-state: paused !important;
 }

@@ -1,5 +1,4 @@
 import React from 'react'
-import './Menu.css'
 
 import Close from '../../../resources/icons/close.svg'
 
@@ -8,6 +7,7 @@ interface IProps {
   className?: string
   heading: string
   closeFn: () => void
+  hidden?: boolean
 }
 
 export default class Menu extends React.Component<IProps, never> {
@@ -17,7 +17,7 @@ export default class Menu extends React.Component<IProps, never> {
 
   render() {
     return (
-      <div className={'Menu ' + this.props.className} id="menuContainer">
+      <div className={'Menu ' + this.props.className} id="menuContainer" hidden={this.props.hidden}>
         <div className="MenuTop" id="menuContainerTop">
           <div className="MenuHeading" id="menuHeading">
             {this.props.heading}

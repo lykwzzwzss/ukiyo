@@ -1,0 +1,123 @@
+/* ---------- 启动器风格弹窗 ---------- */
+
+.DialogOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(4, 6, 11, 0.52);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  animation: dialogOverlayIn 0.18s ease-out both;
+}
+
+.Dialog {
+  width: 400px;
+  max-width: 92vw;
+  box-sizing: border-box;
+  padding: 26px 28px 22px;
+  border-radius: 10px;
+  border: 1px solid rgba(232, 201, 143, 0.34);
+  background: linear-gradient(160deg, rgba(30, 36, 50, 0.92) 0%, rgba(11, 15, 22, 0.95) 100%);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  color: #f0e8d8;
+  animation: dialogIn 0.22s cubic-bezier(0.19, 1, 0.22, 1) both;
+}
+
+.DialogTitle {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: #f4e9d3;
+}
+
+.DialogTitle::after {
+  content: '';
+  display: block;
+  width: 34px;
+  height: 1px;
+  margin-top: 12px;
+  background: linear-gradient(90deg, rgba(232, 201, 143, 0.75), rgba(232, 201, 143, 0));
+}
+
+.DialogMessage {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  letter-spacing: 0.02em;
+  color: rgba(240, 232, 216, 0.82);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+
+.DialogActions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.DialogButton {
+  min-width: 92px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(232, 201, 143, 0.32);
+  background: rgba(232, 201, 143, 0.07);
+  color: #f0e8d8;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, filter 0.18s ease;
+}
+
+.DialogButton:hover {
+  background: rgba(232, 201, 143, 0.15);
+  border-color: rgba(232, 201, 143, 0.55);
+}
+
+.DialogButton:focus-visible {
+  outline: 1px solid rgba(255, 246, 226, 0.6);
+  outline-offset: 2px;
+}
+
+.DialogButton.primary {
+  border-color: rgba(255, 246, 226, 0.45);
+  background: linear-gradient(180deg, #f3dcae 0%, #e3c48c 52%, #c9a76b 100%);
+  color: #3a3020;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.DialogButton.primary:hover {
+  filter: brightness(1.05);
+}
+
+@keyframes dialogOverlayIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

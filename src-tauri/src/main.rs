@@ -5,48 +5,40 @@
 
 use args::{Args, ArgsError};
 use file_helpers::dir_exists;
-
-use once_cell::sync::Lazy;
 use proxy::set_proxy_addr;
 use std::fs;
 use std::io::Write;
-use std::{collections::HashMap, sync::Mutex};
 use tauri::api::path::data_dir;
 use tauri::async_runtime::block_on;
 
-use std::thread;
-use sysinfo::{Pid, ProcessExt, System, SystemExt};
-
 #[cfg(target_os = "windows")]
 use crate::admin::reopen_as_admin;
+
+#[cfg(target_os = "windows")]
+extern "system" {
+  fn GetConsoleWindow() -> *mut core::ffi::c_void;
+  fn ShowWindow(hwnd: *mut core::ffi::c_void, n_cmd_show: i32) -> i32;
+}
 #[cfg(target_os = "windows")]
 use system_helpers::is_elevated;
 
-#[cfg(target_os = "linux")]
-use std::{
-  thread::{sleep, JoinHandle},
-  time::{Duration, Instant},
-};
-
+mod address_check;
 mod admin;
 mod config;
-mod downloader;
 mod file_helpers;
-mod gamebanana;
+mod game_environment;
+mod game_lifecycle;
+mod game_profile;
+mod gimi;
 mod lang;
+mod legacy34;
+mod managed_patch;
 mod patch;
 mod proxy;
-mod release;
 mod system_helpers;
-mod unzip;
-mod web;
-
-static WATCH_GAME_PROCESS: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-static WATCH_GRASSCUTTER_PROCESS: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-static GC_PID: std::sync::Mutex<usize> = Mutex::new(696969);
-
-#[cfg(target_os = "linux")]
-pub static AAGL_THREAD: Lazy<Mutex<Option<JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
+mod wallpapers;
+#[cfg(windows)]
+mod windows_launch;
 
 fn try_flush() {
   std::io::stdout().flush().unwrap_or(())
@@ -60,7 +52,6 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
   args.flag("h", "help", "Print various CLI args");
   args.flag("p", "proxy", "Start the proxy server");
   args.flag("G", "launch-game", "Launch the game");
-  args.flag("o", "other-redirects", "Redirect other certain anime games");
   args.flag(
     "A",
     "no-admin",
@@ -71,7 +62,6 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
     "no-gui",
     "Run in CLI mode. Requires -A to be passed as well.",
   );
-  args.flag("s", "server", "Launch the configured GC server");
   args.flag(
     "P",
     "patch",
@@ -90,6 +80,7 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
     getopts::Occur::Optional,
     None,
   );
+  args.flag("Q", "gimi-prepare", "Prepare GIMI views and print a summary");
   args.option(
     "a",
     "game-args",
@@ -101,7 +92,7 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
 
   args.parse(inp).unwrap();
 
-  let config = config::get_config(String::from("default"));
+  let config = config::get_config();
 
   if args.value_of("help")? {
     println!("{}", args.full_usage());
@@ -110,42 +101,57 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
 
   // Patch if needed
   if args.value_of("patch")? {
-    patch::patch_game(false, 0.to_string()).await;
+    if let Err(error) = patch::patch_game(false, "0".into(), None).await {
+      eprintln!("{}", error);
+    }
+  }
+
+  if args.value_of("gimi-prepare")? {
+    let root = match gimi::cli_root() {
+      Ok(root) => root,
+      Err(error) => {
+        eprintln!("{}", error);
+        std::process::exit(1);
+      }
+    };
+    let game = match config.game_install_path.clone().filter(|value| !value.trim().is_empty()) {
+      Some(game) => game,
+      None => {
+        eprintln!("游戏路径未设置");
+        std::process::exit(1);
+      }
+    };
+    let mods = match config.gimi_mods_path.clone() {
+      Some(path) if !path.trim().is_empty() => std::path::PathBuf::from(path),
+      _ => root.join("Mods"),
+    };
+    match gimi::prepare_workspace(&root, std::path::Path::new(&game), &mods) {
+      Ok(summary) => {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap_or_default());
+        std::process::exit(0);
+      }
+      Err(error) => {
+        eprintln!("{}", error);
+        std::process::exit(1);
+      }
+    }
   }
 
   if args.value_of("launch-game")? {
     let game_path = config.game_install_path;
     let game_args: String = args.value_of("game-args").unwrap_or(String::new());
 
-    if game_path.is_some() {
-      if args.value_of("non-elevated-game")? {
-        system_helpers::run_un_elevated(game_path.unwrap(), Some(game_args))
-      } else {
-        system_helpers::run_program(game_path.unwrap(), Some(game_args))
+    if let Some(game_path) = game_path {
+      let run_as_user = args.value_of("non-elevated-game")?;
+      if let Err(e) = system_helpers::run_program(game_path, Some(game_args), Some(run_as_user)).await {
+        eprintln!("{}", e);
       }
     }
   }
 
-  if args.value_of("server")? && config.grasscutter_path.is_some() && config.java_path.is_some() {
-    let server_jar = config.grasscutter_path.unwrap();
-    let mut server_path = server_jar.clone();
-    // Strip jar name from path
-    if server_path.contains('/') {
-      // Can never panic because of if
-      let len = server_jar.rfind('/').unwrap();
-      server_path.truncate(len);
-    } else if server_path.contains('\\') {
-      let len = server_jar.rfind('\\').unwrap();
-      server_path.truncate(len);
-    }
-    let java_path = config.java_path.unwrap();
-
-    system_helpers::run_jar(server_jar, server_path.to_string(), java_path);
-  }
-
   if args.value_of::<String>("host").is_ok() && !args.value_of::<String>("host")?.is_empty() {
     let host = args.value_of::<String>("host")?;
-    set_proxy_addr(host);
+    if let Err(e) = set_proxy_addr(host) { eprintln!("{}", e); }
   }
 
   if args.value_of("proxy")? {
@@ -154,19 +160,30 @@ async fn parse_args(inp: &Vec<String>) -> Result<Args, ArgsError> {
     pathbuf.push("cultivation");
     pathbuf.push("ca");
 
-    if args.value_of("other-redirects")? {
-      // proxy::set_redirect_more(); // Unused
-    }
-
-    connect(8035, pathbuf.to_str().unwrap().to_string()).await;
+    if let Err(e) = connect(8035, pathbuf.to_str().unwrap().to_string()).await { eprintln!("{}", e); }
   }
 
   Ok(args)
 }
 
 fn main() -> Result<(), ArgsError> {
-  let args: Vec<String> = std::env::args().collect();
+  // 忽略 tauri dev / cargo 透传过来的构建参数，只保留应用自身参数
+  let args: Vec<String> = std::env::args()
+    .filter(|arg| arg != "--no-default-features" && arg != "--")
+    .collect();
   let parsed_args = block_on(parse_args(&args)).unwrap();
+
+  // Windows 调试构建会附带一个控制台窗口，启动游戏后启动器最小化，
+  // 这个黑框就会留在桌面上。双击启动时把它隐藏；从终端运行时保留日志输出。
+  #[cfg(target_os = "windows")]
+  if !parsed_args.value_of("no-gui")? {
+    unsafe {
+      let console = GetConsoleWindow();
+      if !console.is_null() {
+        ShowWindow(console, 0);
+      }
+    }
+  }
 
   #[cfg(target_os = "windows")]
   if !is_elevated() && !parsed_args.value_of("no-admin")? {
@@ -189,6 +206,7 @@ fn main() -> Result<(), ArgsError> {
 
   // For disabled GUI
   ctrlc::set_handler(|| {
+    gimi::shutdown();
     disconnect();
     block_on(patch::unpatch_game());
     std::process::exit(0);
@@ -197,66 +215,42 @@ fn main() -> Result<(), ArgsError> {
 
   if !parsed_args.value_of("no-gui")? {
     tauri::Builder::default()
+      .setup(|app| {
+        game_lifecycle::initialize(app.handle());
+        Ok(())
+      })
       .invoke_handler(tauri::generate_handler![
-        enable_process_watcher,
-        enable_grasscutter_watcher,
+        wallpapers::list_wallpapers,
         connect,
         disconnect,
-        req_get,
         is_game_running,
-        is_grasscutter_running,
-        restart_grasscutter,
-        get_theme_list,
-        get_profile_list,
-        system_helpers::run_command,
         system_helpers::run_program,
-        system_helpers::run_program_args,
-        system_helpers::run_program_relative,
-        system_helpers::start_service,
-        system_helpers::service_status,
-        system_helpers::stop_service,
-        system_helpers::run_jar,
-        system_helpers::run_jar_root,
         system_helpers::open_in_browser,
-        system_helpers::install_location,
         system_helpers::is_elevated,
-        system_helpers::set_migoto_delay,
         system_helpers::wipe_registry,
         system_helpers::get_platform,
-        system_helpers::run_un_elevated,
-        system_helpers::jvm_add_cap,
-        system_helpers::jvm_remove_cap,
         patch::patch_game,
+        game_profile::get_game_version,
         patch::unpatch_game,
         proxy::set_proxy_addr,
         proxy::generate_ca_files,
-        release::get_latest_release,
-        unzip::unzip,
-        file_helpers::rename,
-        file_helpers::dir_create,
         file_helpers::dir_exists,
-        file_helpers::dir_is_empty,
-        file_helpers::dir_delete,
-        file_helpers::copy_file,
-        file_helpers::copy_file_with_new_name,
-        file_helpers::delete_file,
-        file_helpers::are_files_identical,
-        file_helpers::read_file,
-        file_helpers::write_file,
         file_helpers::does_file_exist,
-        downloader::download_file,
-        downloader::stop_download,
         lang::get_lang,
         lang::get_languages,
-        web::valid_url,
-        web::web_get,
-        gamebanana::get_download_links,
-        gamebanana::list_submissions,
-        gamebanana::list_mods
+        gimi::gimi_status,
+        gimi::gimi_preload,
+        gimi::gimi_refresh,
+        gimi::gimi_reload,
+        gimi::gimi_fps_status,
+        gimi::gimi_toggle_mod,
+        gimi::gimi_rename_mod,
+        gimi::gimi_open_mods
       ])
       .on_window_event(|event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event.event() {
           // Ensure all proxy stuff is handled
+          gimi::shutdown();
           disconnect();
         }
       })
@@ -269,6 +263,7 @@ fn main() -> Result<(), ArgsError> {
   }
 
   // Always disconnect upon closing the program
+  gimi::shutdown();
   disconnect();
 
   // Always unpatch game upon closing the program
@@ -279,278 +274,15 @@ fn main() -> Result<(), ArgsError> {
 
 #[tauri::command]
 fn is_game_running() -> bool {
-  // Grab the game process name
-  let proc = WATCH_GAME_PROCESS.lock().unwrap().to_string();
-
-  !proc.is_empty()
-}
-
-#[cfg(target_os = "windows")]
-#[tauri::command]
-fn enable_process_watcher(window: tauri::Window, process: String) {
-  *WATCH_GAME_PROCESS.lock().unwrap() = process;
-
-  window.listen("disable_process_watcher", |_e| {
-    *WATCH_GAME_PROCESS.lock().unwrap() = "".to_string();
-  });
-
-  println!("Starting process watcher...");
-
-  thread::spawn(move || {
-    // Initial sleep for 8 seconds, since running 20 different injectors or whatever can take a while
-    std::thread::sleep(std::time::Duration::from_secs(60));
-
-    let mut system = System::new_all();
-
-    loop {
-      // Shorten loop timer to avoid user closing Cultivation before unpatching/proxy disconnecting
-      thread::sleep(std::time::Duration::from_secs(2));
-
-      // Refresh system info
-      system.refresh_all();
-
-      // Grab the game process name
-      let proc = WATCH_GAME_PROCESS.lock().unwrap().to_string();
-
-      if !proc.is_empty() {
-        let mut proc_with_name = system.processes_by_exact_name(&proc);
-        let exists = proc_with_name.next().is_some();
-
-        // If the game process closes, disable the proxy.
-        if !exists {
-          println!("Game closed");
-
-          *WATCH_GAME_PROCESS.lock().unwrap() = "".to_string();
-          disconnect();
-
-          window.emit("game_closed", &()).unwrap();
-          break;
-        }
-      }
-    }
-  });
-}
-
-// The library takes care of it
-#[cfg(target_os = "linux")]
-#[tauri::command]
-fn enable_process_watcher(window: tauri::Window, process: String) {
-  drop(process);
-  thread::spawn(move || {
-    let end_time = Instant::now() + Duration::from_secs(90);
-    let game_thread = loop {
-      let mut lock = AAGL_THREAD.lock().unwrap();
-      if lock.is_some() {
-        break lock.take().unwrap();
-      }
-      drop(lock);
-      if end_time < Instant::now() {
-        // If more than 60 seconds pass something has gone wrong
-        println!("Waiting for game thread timed out");
-        return;
-      }
-      // Otherwhise wait in order to not use too many CPU cycles
-      sleep(Duration::from_millis(128));
-    };
-    game_thread.join().unwrap();
-    println!("Game closed");
-
-    *WATCH_GAME_PROCESS.lock().unwrap() = "".to_string();
-    disconnect();
-
-    window.emit("game_closed", &()).unwrap();
-  });
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn enable_process_watcher(window: tauri::Window, process: String) {}
-
-#[tauri::command]
-fn is_grasscutter_running() -> bool {
-  // Grab the grasscutter process name
-  let proc = WATCH_GRASSCUTTER_PROCESS.lock().unwrap().to_string();
-
-  !proc.is_empty()
-}
-
-#[cfg(windows)]
-#[tauri::command]
-fn restart_grasscutter(window: tauri::Window) -> bool {
-  let pid: usize = *GC_PID.lock().unwrap();
-  let system = System::new_all();
-  // Get the process
-  if let Some(process) = system.process(Pid::from(pid)) {
-    // Kill it
-    if process.kill() {
-      // Also kill the cmd it was open in
-      if let Some(parent) = system.process(process.parent().unwrap()) {
-        parent.kill();
-      }
-      for process_gc in system.processes_by_name("java") {
-        if process_gc.cmd().last().unwrap().contains("grasscutter") {
-          process_gc.kill();
-        }
-      }
-      window.emit("disable_grasscutter_watcher", &()).unwrap();
-      thread::sleep(std::time::Duration::from_secs(2));
-      // Start again
-      window.emit("start_grasscutter", &()).unwrap();
-      true
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-}
-
-#[cfg(unix)]
-#[tauri::command]
-fn restart_grasscutter(_window: tauri::Window) {
-  // Placeholder text for imports
-  let s = System::new();
-  if let Some(process) = s.process(Pid::from(1337)) {
-    println!("{}", process.name());
-  }
+  game_lifecycle::is_running()
 }
 
 #[tauri::command]
-fn enable_grasscutter_watcher(window: tauri::Window, process: String) {
-  let grasscutter_name = process.clone();
-  let mut gc_pid = Pid::from(696969);
-
-  *WATCH_GRASSCUTTER_PROCESS.lock().unwrap() = process;
-
-  window.listen("disable_grasscutter_watcher", |_e| {
-    *WATCH_GRASSCUTTER_PROCESS.lock().unwrap() = "".to_string();
-  });
-
-  println!("Starting grasscutter watcher...");
-
-  thread::spawn(move || {
-    // Initial sleep for 1 second while Grasscutter opens
-    std::thread::sleep(std::time::Duration::from_secs(3));
-
-    let mut system = System::new_all();
-
-    for process_gc in system.processes_by_name("java") {
-      if process_gc.cmd().last().unwrap().contains(&grasscutter_name) {
-        gc_pid = process_gc.pid();
-        *GC_PID.lock().unwrap() = gc_pid.into();
-        window
-          .emit("grasscutter_started", gc_pid.to_string())
-          .unwrap();
-      }
-    }
-
-    loop {
-      // Shorten loop timer to avoid user closing Cultivation before automatic stuff
-      thread::sleep(std::time::Duration::from_secs(2));
-
-      // Refresh system info
-      system.refresh_all();
-
-      // Grab the grasscutter process name
-      let proc = WATCH_GRASSCUTTER_PROCESS.lock().unwrap().to_string();
-
-      if !proc.is_empty() {
-        let mut exists = true;
-
-        if system.process(gc_pid).is_none() {
-          exists = false;
-        }
-
-        // If the grasscutter process closes.
-        if !exists {
-          println!("Grasscutter closed");
-
-          *WATCH_GRASSCUTTER_PROCESS.lock().unwrap() = "".to_string();
-
-          window.emit("grasscutter_closed", &()).unwrap();
-          break;
-        }
-      }
-    }
-  });
-}
-
-#[tauri::command]
-async fn connect(port: u16, certificate_path: String) {
-  // Log message to console.
-  println!("Connecting to proxy...");
-
-  // Change proxy settings.
-  proxy::connect_to_proxy(port);
-
-  // Create and start a proxy.
-  proxy::create_proxy(port, certificate_path).await;
+async fn connect(port: u16, certificate_path: String) -> Result<(), String> {
+  proxy::start_managed_proxy(port, certificate_path).await
 }
 
 #[tauri::command]
 fn disconnect() {
-  // Log message to console.
-  println!("Disconnecting from proxy...");
-
-  // Change proxy settings.
-  proxy::disconnect_from_proxy();
-}
-
-#[tauri::command]
-async fn req_get(url: String) -> String {
-  // Send a GET request to the specified URL and send the response body back to the client.
-  web::query(&url.to_string()).await
-}
-
-#[tauri::command]
-async fn get_theme_list(data_dir: String) -> Vec<HashMap<String, String>> {
-  let theme_loc = format!("{}/themes", data_dir);
-
-  // Ensure folder exists
-  if !std::path::Path::new(&theme_loc).exists() {
-    std::fs::create_dir_all(&theme_loc).unwrap();
-  }
-
-  // Read each index.json folder in each theme folder
-  let mut themes = Vec::new();
-
-  for entry in std::fs::read_dir(&theme_loc).unwrap() {
-    let entry = entry.unwrap();
-    let path = entry.path();
-
-    if path.is_dir() {
-      let index_path = format!("{}/index.json", path.to_str().unwrap());
-
-      if std::path::Path::new(&index_path).exists() {
-        let theme_json = std::fs::read_to_string(&index_path).unwrap();
-
-        let mut map = HashMap::new();
-
-        map.insert("json".to_string(), theme_json);
-        map.insert("path".to_string(), path.to_str().unwrap().to_string());
-
-        // Push key-value pair containing "json" and "path"
-        themes.push(map);
-      }
-    }
-  }
-
-  themes
-}
-
-#[tauri::command]
-async fn get_profile_list(data_dir: String) -> Vec<String> {
-  let profile_loc = format!("{}/profiles", data_dir);
-
-  // Ensure folder exists
-  if !std::path::Path::new(&profile_loc).exists() {
-    std::fs::create_dir_all(&profile_loc).unwrap();
-  }
-
-  let mut p_list = Vec::new();
-  for entry in std::fs::read_dir(&profile_loc).unwrap() {
-    p_list.push(entry.unwrap().file_name().into_string().unwrap());
-  }
-
-  p_list
+  if let Err(error) = proxy::stop_managed_proxy() { eprintln!("Proxy disconnect failed: {}", error); }
 }

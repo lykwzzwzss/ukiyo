@@ -4,7 +4,6 @@ import { translate } from '../../../utils/language'
 import TextInput from './TextInput'
 import File from '../../../resources/icons/folder.svg'
 
-import './DirInput.css'
 
 interface IProps {
   value?: string
@@ -38,17 +37,7 @@ export default class DirInput extends React.Component<IProps, IState> {
   }
 
   static getDerivedStateFromProps(props: IProps, state: IState) {
-    const newState = state
-
-    if (props.value && state.value === '') {
-      newState.value = props.value || ''
-    }
-
-    if (props.placeholder) {
-      newState.placeholder = props.placeholder
-    }
-
-    return newState
+    return { value: props.value ?? state.value, placeholder: props.placeholder ?? state.placeholder }
   }
 
   async componentDidMount() {
@@ -96,7 +85,6 @@ export default class DirInput extends React.Component<IProps, IState> {
             this.setState({ value: text })
 
             if (this.props.onChange) this.props.onChange(text)
-            this.forceUpdate()
           }}
           customClearBehaviour={this.props.customClearBehaviour}
         />

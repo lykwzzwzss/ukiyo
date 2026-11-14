@@ -1,0 +1,36 @@
+{
+  "source_directory": "C:\\AppD\\deepseek\\ys\\_src\\genshin-fps-unlock",
+  "upstream": "https://github.com/34736384/genshin-fps-unlock",
+  "license": "MIT",
+  "local_3_4_unityplayer_fallback": true,
+  "dll_sha256": "98eeb7986c572a2954b822052210432ef0bc5005da96f546565249ab96a16660",
+  "integration": "FpsUnlock.cs owns IPC/hook lifetime; no standalone unlocker UI or .NET 8 host needed",
+  "gameplay_verified": false,
+  "native_rebuilt_from_local_source": true,
+  "native_modifications": [
+    "Dedicated Local\\GIMI34.FpsUnlock.IPC channel",
+    "Validated automatic UnityPlayer 3.4 / UserAssembly 4.7 / modern main-module resolver",
+    "Deduplicated candidates, bounded branch traversal and writable-target checks",
+    "IPC resolver-kind diagnostic at offset 12"
+  ],
+  "build_script": "Sources/build_fps_native.cmd",
+  "synthetic_integration_verified": true,
+  "date": "2026-10-18",
+  "upstream_4_7": {
+    "tag": "v3.2.0",
+    "commit": "282a74a34eb3c33c5f2b5542c37a43bf03f300c0",
+    "commit_date": "2024-06-28T21:11:02-04:00",
+    "release_date": "2024-07-01",
+    "source": "unlockfps_nc/Service/ProcessService.cs",
+    "pattern": "B9 3C 00 00 00 FF 15",
+    "release_url": "https://github.com/34736384/genshin-fps-unlock/releases/tag/v3.2.0"
+  },
+  "resolvers": [
+    "UnityPlayer 3.4: 7F 0F 8B 05",
+    "UserAssembly 4.7: B9 3C 00 00 00 FF 15 -> initialized pointer -> Unity setter",
+    "Modern main image: B9 3C 00 00 00 E8 -> E9 -> setter"
+  ],
+  "resolver_unit_checks": 19,
+  "synthetic_integration_checks": 84,
+  "core_configuration_checks": 4
+}

@@ -1,508 +1,283 @@
 import React from 'react'
-import Checkbox from './common/Checkbox'
 import BigButton from './common/BigButton'
 import TextInput from './common/TextInput'
-import HelpButton from './common/HelpButton'
-import { getConfig, saveConfig, setConfigOption, setProfileOption } from '../../utils/configuration'
-import { translate } from '../../utils/language'
+import { getConfig, updateConfig, subscribeConfig } from '../../utils/configuration'
+import Tr, { translate } from '../../utils/language'
 import { invoke } from '@tauri-apps/api/tauri'
-
-import Server from '../../resources/icons/server.svg'
-import Plus from '../../resources/icons/plus.svg'
-
-import './ServerLaunchSection.css'
 import { dataDir } from '@tauri-apps/api/path'
-import { GrasscutterElevation } from './menu/Options'
-import { getGameExecutable, getGameVersion, getGrasscutterJar } from '../../utils/game'
-import { patchGame, unpatchGame } from '../../utils/rsa'
-import { listen } from '@tauri-apps/api/event'
-import { confirm } from '@tauri-apps/api/dialog'
-import DownloadHandler from '../../utils/download'
+import { getGameExecutable, getGameVersion } from '../../utils/game'
+import { patchGame } from '../../utils/rsa'
+import { alertDialog } from './common/Dialog'
 
-interface IProps {
-  openExtras: (playGame: () => void) => void
-  downloadHandler: DownloadHandler
-}
 
 interface IState {
-  grasscutterEnabled: boolean
+  launching: boolean
   buttonLabel: string
-  checkboxLabel: string
   ip: string
   port: string
-  launchServer: (proc_name?: string) => void
-
   ipPlaceholder: string
   portPlaceholder: string
-
-  httpsLabel: string
-  httpsEnabled: boolean
-
-  swag: boolean
-  akebiSet: boolean
-  migotoSet: boolean
-
-  unElevated: boolean
-  profile: string
-  profiles: string[]
 }
 
-export default class ServerLaunchSection extends React.Component<IProps, IState> {
-  constructor(props: IProps) {
+export default class ServerLaunchSection extends React.Component<Readonly<unknown>, IState> {
+  constructor(props: Readonly<unknown>) {
     super(props)
 
     this.state = {
-      grasscutterEnabled: false,
+      launching: false,
       buttonLabel: '',
-      checkboxLabel: '',
       ip: '',
       port: '',
       ipPlaceholder: '',
       portPlaceholder: '',
-      httpsLabel: '',
-      httpsEnabled: false,
-      launchServer: () => {
-        alert('Error launching grasscutter')
-      },
-      swag: false,
-      akebiSet: false,
-      migotoSet: false,
-      unElevated: false,
-      profile: 'default',
-      profiles: ['default'],
     }
 
-    this.toggleGrasscutter = this.toggleGrasscutter.bind(this)
     this.playGame = this.playGame.bind(this)
     this.setIp = this.setIp.bind(this)
     this.setPort = this.setPort.bind(this)
-    this.toggleHttps = this.toggleHttps.bind(this)
-    this.launchServer = this.launchServer.bind(this)
     this.setButtonLabel = this.setButtonLabel.bind(this)
-    this.setProfile = this.setProfile.bind(this)
-
-    listen('start_grasscutter', async () => {
-      this.launchServer()
-    })
-
-    listen('set_game', async () => {
-      this.setButtonLabel()
-    })
-
-    listen('set_config', async () => {
-      this.setButtonLabel()
-    })
   }
+
+  private mountedGeneration = 0
+  private labelRequest = 0
+  private unsubscribeConfig: (() => void) | undefined
 
   async componentDidMount() {
-    const config = await getConfig()
-
-    this.setState({
-      grasscutterEnabled: config.toggle_grasscutter || false,
-      buttonLabel: await translate('main.launch_button'),
-      checkboxLabel: await translate('main.gc_enable'),
-      ip: config.last_ip || '',
-      port: config.last_port || '',
-      ipPlaceholder: await translate('main.ip_placeholder'),
-      portPlaceholder: await translate('help.port_placeholder'),
-      httpsLabel: await translate('main.https_enable'),
-      httpsEnabled: config.https_enabled || false,
-      swag: config.swag_mode || false,
-      akebiSet: config.akebi_path !== '',
-      migotoSet: config.migoto_path !== '',
-      unElevated: config.un_elevated || false,
-      profile: config.profile || 'default',
-      profiles: (await this.getProfileList()).map((t) => t),
+    const generation = ++this.mountedGeneration
+    this.unsubscribeConfig = subscribeConfig((config, previous) => {
+      if (
+        !previous ||
+        config.game_install_path !== previous.game_install_path ||
+        config.show_version !== previous.show_version ||
+        config.language !== previous.language
+      ) {
+        this.setState({ buttonLabel: '' })
+        void this.setButtonLabel()
+      }
     })
-
-    this.setButtonLabel()
+    const config = await getConfig()
+    const [ipPlaceholder, portPlaceholder] = await Promise.all([
+      translate('main.ip_placeholder'),
+      translate('help.port_placeholder'),
+    ])
+    if (generation !== this.mountedGeneration) return
+    this.setState({
+      ip: config.last_ip || 'localhost',
+      port: config.last_port || '443',
+      ipPlaceholder,
+      portPlaceholder,
+    })
+    void this.setButtonLabel()
   }
 
-  async toggleGrasscutter() {
-    const config = await getConfig()
-
-    config.toggle_grasscutter = !config.toggle_grasscutter
-
-    // Set state as well
-    this.setState({
-      grasscutterEnabled: config.toggle_grasscutter,
-    })
-
-    await saveConfig(config)
+  componentWillUnmount() {
+    this.mountedGeneration++
+    this.labelRequest++
+    this.unsubscribeConfig?.()
   }
 
-  async playGame(exe?: string, proc_name?: string) {
+  private launchInFlight = false
+
+  async playGame() {
+    if (this.launchInFlight) return
+    this.launchInFlight = true
+    this.setState({ launching: true })
+    try {
+      if (await invoke<boolean>('is_game_running')) return
+      await this.launchGame()
+    } catch (error) {
+      if (!(await invoke<boolean>('is_game_running'))) {
+        await Promise.allSettled([invoke('disconnect'), invoke('unpatch_game')])
+      }
+      console.error('Game launch failed:', error)
+      await alertDialog({
+        title: '启动失败',
+        message: '启动游戏失败：' + String(error),
+      })
+    } finally {
+      this.launchInFlight = false
+      this.setState({ launching: false })
+    }
+  }
+
+  async launchGame() {
     const config = await getConfig()
 
     if (!(await getGameExecutable())) {
-      alert('Game executable not set!')
+      await alertDialog({
+        title: '未设置游戏路径',
+        message: '请先在设置中选择游戏安装路径。',
+      })
       return
     }
 
-    // Check for HTTPS on local
-    if (this.state.httpsEnabled) {
-      if (this.state.ip == 'localhost') {
-        if (
-          await confirm(
-            "Oops! HTTPS is enabled but you're connecting to localhost! \nHTTPS MUST be disabled for localhost. \n\nWould you like to disable HTTPS and continue?",
-            { title: 'WARNING!!', type: 'warning' }
-          )
-        ) {
-          this.toggleHttps()
-        } else {
-          if (!(await confirm('You have chosen to keep HTTPS enabled! \n\nYOU WILL ERROR ON LOGIN.'))) {
-            return
-          }
-        }
+    if (
+      !this.state.ip.trim() ||
+      !/^\d+$/.test(this.state.port) ||
+      Number(this.state.port) < 1 ||
+      Number(this.state.port) > 65535
+    ) {
+      await alertDialog({
+        title: '端口无效',
+        message: '请填写服务器地址，以及 1–65535 之间的端口。',
+      })
+      return
+    }
+
+    const game_exe = await getGameExecutable()
+    const patchable = game_exe?.toLowerCase().includes('yuanshen') || game_exe?.toLowerCase().includes('genshin')
+
+    const gameExists = await invoke('dir_exists', {
+      path: config.game_install_path,
+    })
+
+    if (!gameExists) {
+      throw new Error('未找到游戏！路径：' + config.game_install_path)
+    }
+
+    if (config.patch_rsa && patchable) {
+      const gameVersion = await getGameVersion()
+
+      if (gameVersion == null) {
+        await alertDialog({
+          title: '无法识别版本',
+          message: '无法识别游戏版本，请确认游戏路径是否正确。',
+        })
+        return
+      }
+
+      if (gameVersion?.major == 2 && gameVersion?.minor < 9) {
+        await alertDialog({
+          title: '游戏版本过旧',
+          message: '该版本无法使用 RSA 补丁，请先在设置中关闭 RSA 补丁。',
+        })
+        return
+      }
+
+      if (gameVersion?.major == 3 && gameVersion?.minor < 1) {
+        await alertDialog({
+          title: '游戏版本过旧',
+          message: '该版本无法使用 RSA 补丁，请先在设置中关闭 RSA 补丁。',
+        })
+        return
+      }
+
+      if (gameVersion?.major == 4 && gameVersion?.minor == 5) {
+        await alertDialog({
+          title: '版本不兼容',
+          message: '游戏 4.5 请使用 Cultivation 1.4.0 版本启动。',
+          confirmText: '知道了',
+        })
+        return
+      }
+
+      const versionString = `${gameVersion.major}.${gameVersion.minor}`
+      const patched = await patchGame(false, versionString, 'http://' + this.state.ip.trim() + ':' + this.state.port)
+
+      if (!patched) {
+        await alertDialog({
+          title: '补丁失败',
+          message:
+            '当前游戏版本没有对应的补丁文件。' +
+            '\n请确认游戏版本，并确保 浮世安装目录下有对应版本的补丁。' +
+            '\n\n当前游戏版本：' +
+            gameVersion?.major +
+            '.' +
+            gameVersion?.minor,
+        })
+        return
       }
     }
 
-    // Connect to proxy
-    if (config.toggle_grasscutter) {
-      const game_exe = await getGameExecutable()
-      const newerGame = false
+    await updateConfig({ last_ip: this.state.ip, last_port: this.state.port })
 
-      const patchable = game_exe?.toLowerCase().includes('yuanshen') || game_exe?.toLowerCase().includes('genshin')
-
-      if (config.patch_rsa && patchable) {
-        const gameVersion = await getGameVersion()
-        console.log(gameVersion)
-
-        if (gameVersion == null) {
-          alert(
-            'Game version could not be determined. Please make sure you have the game correctly selected and try again.'
-          )
-          return
-        }
-
-        if (gameVersion?.major == 2 && gameVersion?.minor < 9) {
-          alert('Game version is too old for RSA patching. Please disable RSA patching in the settings and try again.')
-          return
-        }
-
-        if (gameVersion?.major == 3 && gameVersion?.minor < 1) {
-          alert('Game version is too old for RSA patching. Please disable RSA patching in the settings and try again.')
-          return
-        }
-
-        if (gameVersion?.major == 4 && gameVersion?.minor == 5) {
-          await confirm(
-            'Please use Cultivation version 1.4.0 for game version 4.5. You can find that here: https://github.com/NotThorny/Cultivation/releases/tag/1.4.0'
-          )
-          return
-        }
-
-        const versionString = gameVersion?.major.toString() + gameVersion?.minor.toString()
-
-        // Keeps being misused, remove for now.
-        // if ((gameVersion?.major == 4 && gameVersion?.minor > 5) || config.newer_game) {
-        //   newerGame = true
-
-        //   const path = (await invoke('install_location')) as string
-
-        //   const patchstring = '\\altpatch\\'
-        //   const altPatch = path + patchstring
-
-        //   const ALT_PATCH =
-        //     'https://autopatchhk.yuanshen.com/client_app/download/pc_zip/20231030132335_iOEfPMcbrXpiA8Ca/ScatteredFiles/GenshinImpact_Data/Plugins/mihoyonet.dll'
-        //   const pExists = (await invoke('dir_exists', {
-        //     path: altPatch,
-        //   })) as boolean
-
-        //   if (!pExists) {
-        //     await invoke('dir_create', {
-        //       path: altPatch,
-        //     })
-        //     this.props.downloadHandler.addDownload(ALT_PATCH, path + '/altpatch/mihoyonet.dll')
-        //     await confirm('Please wait for the download in the bottom left to disappear, then click yes')
-        //   }
-
-        //   /* For custom address patch only, used in 4.5 */
-        //   // let httpString = 'http://'
-        //   // if (this.state.httpsEnabled) {
-        //   //   httpString = 'https://'
-        //   // }
-        //   // config.launch_args = '-server=' + httpString + this.state.ip + ':' + this.state.port
-        // }
-
-        const patched = await patchGame(newerGame, versionString)
-
-        if (!patched) {
-          alert(
-            "Could not patch! You're trying to launch a version that you don't have a patch for!" +
-              "\nEnsure you're using a valid game version, and have the patch for this version in your Cultivation install folder." +
-              '\n\nIf this means nothing to you, YOU HAVE THE WRONG GAME VERSION.' +
-              // Add game version due to overwhelming number of people saying they are using a version they are not using
-              '\n\nYOUR GAME VERSION: ' +
-              gameVersion?.major +
-              '.' +
-              gameVersion?.minor
-          )
-          return
-        }
-      }
-
-      // Save last connected server and port
-      await setConfigOption('last_ip', this.state.ip)
-      await setConfigOption('last_port', this.state.port)
-
-      await invoke('enable_process_watcher', {
-        process: proc_name || game_exe,
+    if (config.use_internal_proxy) {
+      await invoke('set_proxy_addr', {
+        addr: 'http://' + this.state.ip + ':' + this.state.port,
       })
-
-      if (config.use_internal_proxy) {
-        // Set IP
-        await invoke('set_proxy_addr', {
-          addr: (this.state.httpsEnabled ? 'https' : 'http') + '://' + this.state.ip + ':' + this.state.port,
-        })
-        // Connect to proxy
-        await invoke('connect', { port: 8365, certificatePath: (await dataDir()) + '\\cultivation\\ca' })
-      }
-
-      // Open server as well if the options are set
-      if (config.grasscutter_with_game) {
-        this.launchServer()
-      }
-    } else {
-      await unpatchGame()
+      await invoke('connect', {
+        port: 8365,
+        certificatePath: (await dataDir()) + '\\cultivation\\ca',
+      })
     }
 
     if (config.wipe_login) {
-      // First wipe registry if we have to
       await invoke('wipe_registry', {
-        // The exe is always PascalCase so we can get the dir using regex
         execName: (await getGameExecutable())?.split('.exe')[0].replace(/([a-z\d])([A-Z])/g, '$1 $2'),
       })
     }
 
-    // Launch the program
-    const gameExists = await invoke('dir_exists', {
-      path: exe || config.game_install_path,
-    })
-
-    if (gameExists)
-      if (config.un_elevated) {
-        await invoke('run_un_elevated', {
-          path: config.game_install_path,
-          args: config.launch_args,
-        })
-      } else {
-        if (config.launch_args.length < 1) {
-          // Run relative when there are no args
-          await invoke('run_program_relative', { path: exe || config.game_install_path })
-        }
-        // Handle XXMI
-        else if (proc_name?.toLowerCase().includes('xxmi')) {
-          await invoke('run_program_args', {
-            path: exe,
-            args: config.launch_args,
-          })
-        } else {
-          // Run directly when there are args
-          await invoke('run_program', {
-            path: exe || config.game_install_path,
-            args: config.launch_args,
-          })
-        }
-      }
-    else alert('Game not found! At: ' + (exe || config.game_install_path))
-  }
-
-  async launchServer(proc_name?: string) {
-    if (await invoke('is_grasscutter_running')) {
-      alert('Grasscutter already running!')
-      return
-    }
-    const config = await getConfig()
-
-    if (!config.grasscutter_path) return alert('Grasscutter not installed or set!')
-
-    const grasscutter_jar = await getGrasscutterJar()
-    await invoke('enable_grasscutter_watcher', {
-      process: proc_name || grasscutter_jar,
-    })
-
-    if (config.auto_mongodb) {
-      // Check if MongoDB is running and start it if not
-      invoke('service_status', { service: 'MongoDB' })
-    }
-
-    let jarFolder = config.grasscutter_path
-
-    if (jarFolder.includes('/')) {
-      jarFolder = jarFolder.substring(0, config.grasscutter_path.lastIndexOf('/'))
-    } else {
-      jarFolder = jarFolder.substring(0, config.grasscutter_path.lastIndexOf('\\'))
-    }
-
-    let cmd = 'run_jar'
-
-    if ((await invoke('get_platform')) === 'linux') {
-      switch (config.grasscutter_elevation) {
-        case GrasscutterElevation.None:
-          break
-
-        case GrasscutterElevation.Capability:
-          await invoke('jvm_add_cap', {
-            javaPath: config.java_path,
-          })
-          break
-
-        case GrasscutterElevation.Root:
-          cmd = 'run_jar_root'
-          break
-
-        default:
-          console.error('Invalid grasscutter_elevation')
-          break
-      }
-    }
-
-    // Launch the jar
-    await invoke(cmd, {
-      path: config.grasscutter_path,
-      executeIn: jarFolder,
-      javaPath: config.java_path || '',
+    await invoke('run_program', {
+      path: config.game_install_path,
+      args: config.launch_args,
+      runAsUser: config.un_elevated,
     })
   }
 
   setIp(text: string) {
-    this.setState({
-      ip: text,
-    })
+    this.setState({ ip: text })
   }
 
   setPort(text: string) {
-    this.setState({
-      port: text,
-    })
-  }
-
-  async toggleHttps() {
-    const config = await getConfig()
-
-    config.https_enabled = !config.https_enabled
-
-    // Set state as well
-    this.setState({
-      httpsEnabled: config.https_enabled,
-    })
-
-    await saveConfig(config)
+    this.setState({ port: text })
   }
 
   async setButtonLabel() {
+    const request = ++this.labelRequest
+    const generation = this.mountedGeneration
     const config = await getConfig()
-    if (config.show_version) {
-      const ver = await getGameVersion()
-      if (ver != null) {
-        this.setState({
-          buttonLabel: (await translate('main.launch_button')) + ' ' + ver?.major + '.' + ver?.minor,
-        })
-      } else {
-        this.setState({
-          buttonLabel: await translate('main.launch_button'),
-        })
-      }
-    } else {
-      this.setState({
-        buttonLabel: await translate('main.launch_button'),
-      })
-    }
-  }
-
-  async setProfile(value: string) {
-    this.setState({ profile: value })
-    await setProfileOption('profile', value)
-    window.location.reload()
-  }
-
-  async getProfileList() {
-    const profiles: string[] = await invoke('get_profile_list', {
-      dataDir: `${await dataDir()}/cultivation`,
-    })
-    const list = ['default']
-
-    profiles.forEach((t) => {
-      list.push(t.split('.json')[0])
-    })
-
-    return list
+    const [label, version] = await Promise.all([
+      translate('main.launch_button'),
+      config.show_version ? getGameVersion(config.game_install_path) : Promise.resolve(null),
+    ])
+    if (request !== this.labelRequest || generation !== this.mountedGeneration) return
+    this.setState({ buttonLabel: version ? `${label}  ${version.major}.${version.minor}` : label })
   }
 
   render() {
     return (
-      <div id="playButton">
-        <div id="serverControls">
-          <Checkbox
-            id="enableGC"
-            label={this.state.checkboxLabel}
-            onChange={this.toggleGrasscutter}
-            checked={this.state.grasscutterEnabled}
+      <div className="ConnectPanel" id="connectPanel">
+        <div className="ConnectHeader">
+          <div className="ConnectTitle">
+            <Tr text="main.connect_server" />
+          </div>
+          <div className="ConnectSub">SERVER CONNECTION</div>
+        </div>
+
+        <div className="ConnectRule" />
+
+        <div className="ServerConfig" id="serverConfigContainer">
+          <label className="FieldLabel" htmlFor="ip">
+            <Tr text="main.server_address" />
+          </label>
+          <TextInput
+            id="ip"
+            key="ip"
+            placeholder={this.state.ipPlaceholder}
+            onChange={this.setIp}
+            value={this.state.ip}
           />
-          <div className="OptionSection" id="menuOptionsContainerProfiles">
-            <div className="OptionValue" id="menuOptionsSelectProfiles">
-              <select
-                value={this.state.profile}
-                id="menuOptionsSelectMenuProfiles"
-                onChange={(event) => {
-                  this.setProfile(event.target.value)
-                }}
-              >
-                {this.state.profiles.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+
+          <label className="FieldLabel" htmlFor="port">
+            <Tr text="main.port" />
+          </label>
+          <TextInput
+            id="port"
+            key="port"
+            placeholder={this.state.portPlaceholder}
+            onChange={this.setPort}
+            value={this.state.port}
+          />
         </div>
 
-        {this.state.grasscutterEnabled && (
-          <div>
-            <div className="ServerConfig" id="serverConfigContainer">
-              <TextInput
-                id="ip"
-                key="ip"
-                placeholder={this.state.ipPlaceholder}
-                onChange={this.setIp}
-                initalValue={this.state.ip}
-              />
-              <TextInput
-                style={{
-                  width: '10%',
-                }}
-                id="port"
-                key="port"
-                placeholder={this.state.portPlaceholder}
-                onChange={this.setPort}
-                initalValue={this.state.port}
-              />
-              <HelpButton contents={'help.port_help_text'} />
-              <Checkbox
-                id="httpsEnable"
-                label={this.state.httpsLabel}
-                onChange={this.toggleHttps}
-                checked={this.state.httpsEnabled}
-              />
-            </div>
-          </div>
-        )}
-
-        <div className="ServerLaunchButtons" id="serverLaunchContainer">
-          <BigButton onClick={this.playGame} id="officialPlay">
-            {this.state.buttonLabel}
-          </BigButton>
-          {this.state.swag && (
-            <BigButton onClick={() => this.props.openExtras(this.playGame)} id="ExtrasMenuButton">
-              <img className="ExtrasIcon" id="extrasIcon" src={Plus} />
-            </BigButton>
-          )}
-          <BigButton onClick={this.launchServer} id="serverLaunch">
-            <img className="ServerIcon" id="serverLaunchIcon" src={Server} />
-          </BigButton>
+        <div className="ConnectStatus">
+          <span className="StatusDot" />
+          <Tr text="main.status_enabled" />
         </div>
+
+        <BigButton onClick={this.playGame} id="launchGame" disabled={this.state.launching}>
+          {this.state.buttonLabel || <Tr text="main.launch_button" />}
+        </BigButton>
       </div>
     )
   }

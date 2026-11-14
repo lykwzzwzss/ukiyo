@@ -1,238 +1,142 @@
 import { fs } from '@tauri-apps/api'
 import { dataDir } from '@tauri-apps/api/path'
+import { invoke } from '@tauri-apps/api/tauri'
 
-let configFilePath: string
-let defaultConfig: Configuration
-;(async () => {
-  defaultConfig = {
-    toggle_grasscutter: true,
-    game_install_path: 'C:\\Program Files\\Genshin Impact\\Genshin Impact game\\GenshinImpact.exe',
-    grasscutter_with_game: false,
-    grasscutter_path: '',
-    java_path: '',
-    close_action: 0,
-    startup_launch: false,
-    last_ip: 'localhost',
-    last_port: '443',
-    language: 'en',
-    custom_background: '',
-    use_theme_background: false,
-    cert_generated: false,
-    theme: 'default',
-    https_enabled: false,
-    debug_enabled: false,
-    patch_rsa: true,
-    use_internal_proxy: true,
-    wipe_login: false,
-    horny_mode: false,
-    auto_mongodb: false,
-    un_elevated: false,
-    redirect_more: false,
-    launch_args: '',
-    offline_mode: false,
-    newer_game: false,
-    show_version: true,
-    profile: 'default',
-
-    // Linux stuff
-    grasscutter_elevation: 'None',
-  }
-})()
-
-/**
- * 'close_action': 0 = close, 1 = tray
- */
 export interface Configuration {
-  toggle_grasscutter: boolean
   game_install_path: string
-  grasscutter_with_game: boolean
-  grasscutter_path: string
-  java_path: string
-  close_action: number
-  startup_launch: boolean
   last_ip: string
   last_port: string
   language: string
-  custom_background: string
-  use_theme_background: boolean
   cert_generated: boolean
-  theme: string
-  https_enabled: boolean
   debug_enabled: boolean
   patch_rsa: boolean
   use_internal_proxy: boolean
   wipe_login: boolean
-  horny_mode: boolean
-  swag_mode?: boolean
-  auto_mongodb: boolean
   un_elevated: boolean
-  redirect_more: boolean
   launch_args: string
-  offline_mode: boolean
-  newer_game: boolean
   show_version: boolean
-  profile: string
+  gimi_enabled: boolean
+  gimi_mods_path: string
+  gimi_fps: number
+}
 
-  // Linux stuff
-  grasscutter_elevation: string
+const defaults: Configuration = {
+  game_install_path: '',
+  last_ip: 'localhost',
+  last_port: '443',
+  language: 'chs',
+  cert_generated: false,
+  debug_enabled: false,
+  patch_rsa: true,
+  use_internal_proxy: true,
+  wipe_login: false,
+  un_elevated: false,
+  launch_args: '',
+  show_version: true,
+  gimi_enabled: false,
+  gimi_mods_path: '',
+  gimi_fps: 0,
+}
 
-  // Swag stuff
-  akebi_path?: string
-  migoto_path?: string
-  reshade_path?: string
-  last_extras?: {
-    migoto: boolean
-    akebi: boolean
-    reshade: boolean
+let filePath = ''
+let loaded: Promise<void> | undefined
+let current: Configuration | undefined
+let writes: Promise<void> = Promise.resolve()
+const listeners = new Set<(config: Configuration, previous?: Configuration) => void>()
+
+function clone(config: Configuration): Configuration {
+  return { ...config }
+}
+
+function normalize(value: unknown): Configuration {
+  const source = (value && typeof value === 'object' && !Array.isArray(value) ? value : {}) as Partial<Configuration>
+  const result = { ...defaults }
+  for (const key of Object.keys(defaults) as (keyof Configuration)[]) {
+    if (typeof source[key] === typeof defaults[key]) {
+      ;(result as Record<string, unknown>)[key] = source[key]
+    }
+  }
+  if (!Number.isInteger(result.gimi_fps) || (result.gimi_fps !== 0 && (result.gimi_fps < 10 || result.gimi_fps > 1000))) {
+    result.gimi_fps = defaults.gimi_fps
+  }
+  return result
+}
+
+async function load(): Promise<void> {
+  if (!loaded) {
+    loaded = (async () => {
+      filePath = (await dataDir()) + 'cultivation/configuration.json'
+      if (!(await invoke<boolean>('does_file_exist', { path1: filePath }))) {
+        current = clone(defaults)
+        return
+      }
+      const raw = await fs.readTextFile(filePath)
+      try {
+        current = normalize(JSON.parse(raw))
+      } catch (error) {
+        console.error('Invalid configuration, using defaults:', error)
+        await fs.copyFile(filePath, filePath + '.corrupt-' + Date.now())
+        current = clone(defaults)
+      }
+    })().catch((error) => {
+      loaded = undefined
+      throw error
+    })
+  }
+  await loaded
+}
+
+function enqueue(action: () => Promise<void>): Promise<void> {
+  const pending = writes.then(action)
+  writes = pending.catch(() => undefined)
+  return pending
+}
+
+function notify(config: Configuration, previous?: Configuration) {
+  listeners.forEach((listener) => {
+    try {
+      listener(clone(config), previous && clone(previous))
+    } catch (error) {
+      console.error('Configuration listener failed:', error)
+    }
+  })
+}
+
+async function persist(next: Configuration): Promise<void> {
+  const temporary = filePath + '.tmp'
+  await fs.createDir(filePath.slice(0, filePath.lastIndexOf('/')), { recursive: true })
+  await fs.writeFile({ path: temporary, contents: JSON.stringify(next) })
+  await fs.renameFile(temporary, filePath)
+  const previous = current
+  current = clone(next)
+  notify(current, previous)
+}
+
+export function subscribeConfig(listener: (config: Configuration, previous?: Configuration) => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
   }
 }
 
-export async function setConfigOption<K extends keyof Configuration>(key: K, value: Configuration[K]): Promise<void> {
-  const config = await getConfig()
-  config[key] = value
-
-  await saveConfig(<Configuration>config)
-}
-
-export async function setProfileOption<K extends keyof Configuration>(key: K, value: Configuration[K]): Promise<void> {
-  const config = await getConfig()
-  config[key] = value
-  const defaultConfig = await getDefaultConfig()
-  defaultConfig[key] = value
-
-  await saveProfileConfig(<Configuration>defaultConfig)
+export async function getConfig(): Promise<Configuration> {
+  await load()
+  await writes
+  return clone(current as Configuration)
 }
 
 export async function getConfigOption<K extends keyof Configuration>(key: K): Promise<Configuration[K]> {
-  const config = await getConfig()
-  const defaults = defaultConfig
-
-  return config[key] === null || config[key] === undefined ? defaults[key] : config[key]
+  return (await getConfig())[key]
 }
 
-export async function getConfig() {
-  const raw = await readConfigFile()
-  let parsed: Configuration = defaultConfig
-
-  try {
-    parsed = <Configuration>JSON.parse(raw)
-  } catch (e) {
-    // We could not open the file
-    console.log(e)
-
-    // TODO: Create a popup saying the config file is corrupted.
-  }
-
-  return parsed
-}
-
-export async function getDefaultConfig() {
-  const raw = await readDefaultConfigFile()
-  let parsed: Configuration = defaultConfig
-
-  try {
-    parsed = <Configuration>JSON.parse(raw)
-  } catch (e) {
-    // We could not open the file
-    console.log(e)
-  }
-
-  return parsed
-}
-
-export async function saveConfig(obj: Configuration) {
-  const raw = JSON.stringify(obj)
-
-  await writeConfigFile(raw)
-}
-
-export async function saveProfileConfig(obj: Configuration) {
-  const local = await dataDir()
-  const raw = JSON.stringify(obj)
-  const prevPath = configFilePath
-  configFilePath = local + 'cultivation/configuration.json'
-  await writeConfigFile(raw)
-
-  configFilePath = prevPath
-}
-
-export async function saveNewProfileConfig(obj: Configuration, prof: string) {
-  obj['profile'] = prof
-  const local = await dataDir()
-  const raw = JSON.stringify(obj)
-  configFilePath = local + 'cultivation/profiles/' + obj['profile'] + '.json'
-
-  const file: fs.FsTextFileOption = {
-    path: configFilePath,
-    contents: raw,
-  }
-
-  await fs.writeFile(file)
-}
-
-async function readConfigFile() {
-  const local = await dataDir()
-
-  if (!configFilePath) {
-    configFilePath = local + 'cultivation/configuration.json'
-  }
-
-  const dataFiles = await fs.readDir(local + 'cultivation')
-
-  // Ensure config exists
-  if (!dataFiles.find((fileOrDir) => fileOrDir?.name === 'configuration.json')) {
-    // Create config file
-    const file: fs.FsTextFileOption = {
-      path: configFilePath,
-      contents: JSON.stringify(defaultConfig),
-    }
-
-    await fs.writeFile(file)
-  }
-
-  // Read existing config to get profile name
-  const raw = await fs.readTextFile(configFilePath)
-  const cfg = <Configuration>JSON.parse(raw)
-  // Switch file to config-specified profile
-  let pf = cfg['profile']
-  if (pf && pf != 'default') {
-    const pff = pf
-    pf = 'profiles/' + pff + '.json'
-  } else {
-    pf = 'configuration.json'
-  }
-  configFilePath = local + 'cultivation/' + pf
-
-  // Ensure Cultivation dir exists
-  const dirs = await fs.readDir(local)
-
-  if (!dirs.find((fileOrDir) => fileOrDir?.name === 'cultivation')) {
-    // Create dir
-    await fs.createDir(local + 'cultivation').catch((e) => console.log(e))
-  }
-
-  const innerDirs = await fs.readDir(local + '/cultivation')
-
-  // Create grasscutter dir for potential installation
-  if (!innerDirs.find((fileOrDir) => fileOrDir?.name === 'grasscutter')) {
-    // Create dir
-    await fs.createDir(local + 'cultivation/grasscutter').catch((e) => console.log(e))
-  }
-
-  // Finally, read the file
-  return await fs.readTextFile(configFilePath)
-}
-
-async function readDefaultConfigFile() {
-  const local = await dataDir()
-  configFilePath = local + 'cultivation/configuration.json'
-  return await fs.readTextFile(configFilePath)
-}
-
-async function writeConfigFile(raw: string) {
-  // All external config functions call readConfigFile, which ensure files exists
-  await fs.writeFile({
-    path: configFilePath,
-    contents: raw,
+export function updateConfig(patch: Partial<Configuration>): Promise<void> {
+  const snapshot = { ...patch }
+  return enqueue(async () => {
+    await load()
+    await persist(normalize({ ...(current as Configuration), ...snapshot }))
   })
+}
+
+export function setConfigOption<K extends keyof Configuration>(key: K, value: Configuration[K]): Promise<void> {
+  return updateConfig({ [key]: value } as Partial<Configuration>)
 }

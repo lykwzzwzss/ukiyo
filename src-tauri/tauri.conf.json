@@ -6,20 +6,24 @@
     "distDir": "../build"
   },
   "package": {
-    "productName": "Cultivation",
-    "version": "1.7.2"
+    "productName": "ukiyo",
+    "version": "2.1.0"
   },
   "tauri": {
     "allowlist": {
+      "all": false,
+      "dialog": { "all": true },
       "fs": {
-        "scope": ["$DATA", "$DATA/cultivation", "$DATA/cultivation/**"]
+        "all": true,
+        "scope": ["$DATA", "$DATA/ukiyo", "$DATA/ukiyo/**"]
       },
+      "path": { "all": true },
+      "window": { "all": true },
       "protocol": {
         "all": true,
         "asset": true,
-        "assetScope": ["$DATA", "$DATA/cultivation", "$DATA/cultivation/**"]
-      },
-      "all": true
+        "assetScope": ["$DATA", "$DATA/ukiyo", "$DATA/ukiyo/**", "$RESOURCE/assets/wallpapers/**"]
+      }
     },
     "bundle": {
       "active": true,
@@ -40,7 +44,7 @@
         "providerShortName": null,
         "signingIdentity": null
       },
-      "resources": ["lang/*.json", "keys/*", "patch/*"],
+      "resources": ["lang/*.json", "keys/*", "patch/*", "patch/3.4/*", "assets/wallpapers/*", "assets/ukiyo-fullsize.ico"],
       "targets": "all",
       "windows": {
         "allowDowngrades": false,
@@ -68,9 +72,9 @@
       {
         "fullscreen": false,
         "transparent": true,
-        "height": 730,
+        "height": 720,
         "resizable": true,
-        "title": "Cultivation: Thorny Edition",
+        "title": "浮世",
         "width": 1280,
         "decorations": false,
         "center": true

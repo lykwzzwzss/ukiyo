@@ -1,0 +1,11 @@
+{
+  "archives": {
+    "removetransparencyfilter_v46.zip": "2958f99b61daeb3ede9feb61f695b77b123100982dcb8b055851d7ce61d9496f",
+    "removetransparencyfilter_v50.zip": "3f8aa6c1165b0958f9cdc9825e542706d9875b02d77ab36473eba6376355aa8a",
+    "removeunderwatercensorship_-_46_19b9a.zip": "c18f2d2350367f51b953e9608deab386a3149dbfcb261ed4901a31170f98de6c"
+  },
+  "land47": "4.6 package; pending 4.7 gameplay verification",
+  "water47": "4.6 package; shared icon rules merged with Tracking",
+  "healthbar": "User supplied BufferValues/HealthBar.ini",
+  "diagnostics_default": false
+}

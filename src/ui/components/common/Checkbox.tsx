@@ -1,7 +1,6 @@
 import React from 'react'
 import checkmark from '../../../resources/icons/check.svg'
 
-import './Checkbox.css'
 
 interface IProps {
   label?: string

@@ -1,0 +1,384 @@
+{
+  "revision": "LeoTools44-20261019-r1",
+  "reference": "https://github.com/leotorrez/LeoTools/blob/main/Fix4.4.py",
+  "source_blob_sha": "9d1d857256a98c8e4a9787fba613d1b8702cd5e0",
+  "characters": [
+    {
+      "character": "MonaCN",
+      "entries": [
+        {
+          "role": "position_vb",
+          "source": "ee5ed1dc",
+          "target": "515f3ce6"
+        },
+        {
+          "role": "blend_vb",
+          "source": "bad2731b",
+          "target": "bad2731b"
+        },
+        {
+          "role": "texcoord_vb",
+          "source": "e543af5d",
+          "target": "e543af5d"
+        },
+        {
+          "role": "draw_vb",
+          "source": "41f18240",
+          "target": "c814ad67"
+        },
+        {
+          "role": "ib",
+          "source": "ed79ea5b",
+          "target": "d5ad8084"
+        }
+      ],
+      "indexes": [
+        0,
+        17688
+      ],
+      "blend_remap": []
+    },
+    {
+      "character": "Nahida",
+      "entries": [
+        {
+          "role": "position_vb",
+          "source": "37ef15ec",
+          "target": "7106f05d"
+        },
+        {
+          "role": "blend_vb",
+          "source": "bb58c686",
+          "target": "de60b92f"
+        },
+        {
+          "role": "texcoord_vb",
+          "source": "f7b7ce48",
+          "target": "902b57ef"
+        },
+        {
+          "role": "draw_vb",
+          "source": "67d2cdf0",
+          "target": "ee37e2d7"
+        },
+        {
+          "role": "ib",
+          "source": "8b268d05",
+          "target": "9b13c166"
+        }
+      ],
+      "indexes": [
+        0,
+        31143,
+        71187,
+        76875
+      ],
+      "blend_remap": []
+    },
+    {
+      "character": "AmberCN",
+      "entries": [
+        {
+          "role": "position_vb",
+          "source": "7f94e8da",
+          "target": "557b2eff"
+        },
+        {
+          "role": "blend_vb",
+          "source": "f35340d5",
+          "target": "f35340d5"
+        },
+        {
+          "role": "texcoord_vb",
+          "source": "dbc594b6",
+          "target": "dbc594b6"
+        },
+        {
+          "role": "draw_vb",
+          "source": "da0adf2f",
+          "target": "53eff008"
+        },
+        {
+          "role": "ib",
+          "source": "8cc9274b",
+          "target": "b41d4d94"
+        }
+      ],
+      "indexes": [
+        0,
+        5670
+      ],
+      "blend_remap": []
+    },
+    {
+      "character": "Amber",
+      "entries": [
+        {
+          "role": "position_vb",
+          "source": "caddc4c6",
+          "target": "a2ea4b2d"
+        },
+        {
+          "role": "blend_vb",
+          "source": "ca5bd26e",
+          "target": "36d20a67"
+        },
+        {
+          "role": "texcoord_vb",
+          "source": "e3047676",
+          "target": "81b777ca"
+        },
+        {
+          "role": "draw_vb",
+          "source": "870a7499",
+          "target": "0eef5bbe"
+        },
+        {
+          "role": "ib",
+          "source": "9976d124",
+          "target": "b03c7e30"
+        }
+      ],
+      "indexes": [
+        0,
+        5670
+      ],
+      "blend_remap": [
+        7,
+        6,
+        9,
+        10,
+        11,
+        29,
+        8,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        77,
+        1,
+        0,
+        73,
+        18,
+        19,
+        20,
+        21,
+        53,
+        70,
+        74,
+        50,
+        30,
+        47,
+        51,
+        76,
+        75,
+        24,
+        71,
+        28,
+        27,
+        54,
+        52,
+        31,
+        72,
+        55,
+        56,
+        61,
+        58,
+        62,
+        64,
+        65,
+        67,
+        68,
+        57,
+        59,
+        60,
+        63,
+        66,
+        69,
+        48,
+        26,
+        25,
+        49,
+        32,
+        33,
+        38,
+        35,
+        39,
+        41,
+        42,
+        44,
+        45,
+        34,
+        36,
+        37,
+        40,
+        43,
+        46,
+        22,
+        23,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "character": "Ningguang",
+      "entries": [
+        {
+          "role": "position_vb",
+          "source": "55b43e99",
+          "target": "f9e1b52b"
+        },
+        {
+          "role": "blend_vb",
+          "source": "9f7dc19c",
+          "target": "735eaea4"
+        },
+        {
+          "role": "texcoord_vb",
+          "source": "906ad233",
+          "target": "1f0ab400"
+        },
+        {
+          "role": "draw_vb",
+          "source": "e4fc5902",
+          "target": "4c2f9a0a"
+        },
+        {
+          "role": "ib",
+          "source": "93085db7",
+          "target": "ad75352c"
+        }
+      ],
+      "indexes": [
+        0,
+        12384,
+        47157
+      ],
+      "blend_remap": [
+        70,
+        6,
+        20,
+        21,
+        22,
+        12,
+        13,
+        14,
+        15,
+        16,
+        7,
+        17,
+        18,
+        19,
+        8,
+        9,
+        10,
+        11,
+        4,
+        5,
+        69,
+        54,
+        53,
+        94,
+        111,
+        115,
+        71,
+        88,
+        92,
+        91,
+        52,
+        114,
+        116,
+        117,
+        118,
+        95,
+        93,
+        67,
+        72,
+        65,
+        68,
+        60,
+        61,
+        62,
+        63,
+        64,
+        66,
+        55,
+        56,
+        57,
+        58,
+        59,
+        40,
+        44,
+        45,
+        32,
+        23,
+        29,
+        24,
+        33,
+        37,
+        38,
+        30,
+        89,
+        90,
+        73,
+        79,
+        76,
+        82,
+        85,
+        86,
+        74,
+        75,
+        77,
+        78,
+        80,
+        81,
+        83,
+        84,
+        87,
+        2,
+        0,
+        112,
+        113,
+        96,
+        102,
+        99,
+        105,
+        108,
+        109,
+        97,
+        98,
+        100,
+        101,
+        103,
+        104,
+        106,
+        107,
+        110,
+        41,
+        43,
+        48,
+        28,
+        3,
+        1,
+        31,
+        36,
+        35,
+        34,
+        26,
+        27,
+        25,
+        39,
+        49,
+        51,
+        47,
+        46,
+        42,
+        50
+      ]
+    }
+  ]
+}

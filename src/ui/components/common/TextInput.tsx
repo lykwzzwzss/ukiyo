@@ -1,6 +1,5 @@
 import React from 'react'
 
-import './TextInput.css'
 import Close from '../../../resources/icons/close.svg'
 
 interface IProps {
@@ -24,20 +23,8 @@ export default class TextInput extends React.Component<IProps, IState> {
     super(props)
 
     this.state = {
-      value: props.value || '',
+      value: props.value ?? props.initalValue ?? '',
     }
-  }
-
-  async componentDidMount() {
-    if (this.props.initalValue) {
-      this.setState({
-        value: this.props.initalValue,
-      })
-    }
-  }
-
-  static getDerivedStateFromProps(props: IProps, state: IState) {
-    return { value: props.value || state.value }
   }
 
   render() {
@@ -48,7 +35,7 @@ export default class TextInput extends React.Component<IProps, IState> {
           readOnly={this.props.readOnly || false}
           placeholder={this.props.placeholder || ''}
           className="TextInput"
-          value={this.state.value}
+          value={this.props.value ?? this.state.value}
           onChange={(e) => {
             this.setState({ value: e.target.value })
             if (this.props.onChange) this.props.onChange(e.target.value)
@@ -64,8 +51,6 @@ export default class TextInput extends React.Component<IProps, IState> {
               this.setState({ value: '' })
 
               if (this.props.onChange) this.props.onChange('')
-
-              this.forceUpdate()
             }}
           >
             <img src={Close} className="TextInputClear" />

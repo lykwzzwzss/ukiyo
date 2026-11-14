@@ -1,369 +1,263 @@
-use ini::Ini;
-use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(windows)]
-use std::ffi::OsStr;
-#[cfg(windows)]
-use {
-  registry::{Data, Hive, Security},
-  windows_service::service::{ServiceAccess, ServiceState::Stopped},
-  windows_service::service_manager::{ServiceManager, ServiceManagerAccess},
-};
+use registry::{Data, Hive, Security};
 
-#[cfg(target_os = "linux")]
-use crate::AAGL_THREAD;
-#[cfg(target_os = "linux")]
-use anime_launcher_sdk::{
-  config::ConfigExt, genshin::config::Config, genshin::game, genshin::states::LauncherState,
-  wincompatlib::prelude::*,
-};
-#[cfg(target_os = "linux")]
-use std::{path::Path, process::Stdio, thread};
-#[cfg(target_os = "linux")]
-use term_detect::get_terminal;
+/// 启动游戏：补丁预检、代理环境、控制台隐藏统一在这里处理。
+///
+/// `run_as_user` 为 true 时，如果启动器本身是提权的，会用桌面用户令牌启动游戏；
+/// 启动器未提权时普通启动即可，因此不需要第二套“非提权”逻辑。
+#[tauri::command]
+pub async fn run_program(
+  path: String,
+  args: Option<String>,
+  run_as_user: Option<bool>,
+) -> Result<(), String> {
+  let working_dir = std::path::Path::new(&path).parent().map(|p| p.to_path_buf());
 
-#[cfg(target_os = "linux")]
-fn guess_user_terminal() -> String {
-  if let Ok(term) = get_terminal() {
-    return term.0;
+  launch_game(
+    &path,
+    args.as_deref(),
+    working_dir.as_deref(),
+    run_as_user.unwrap_or(false),
+  )
+  .await
+}
+
+
+/// 启动器未提权、但游戏需要管理员权限时，用 ShellExecuteExW + runas 触发 UAC，
+/// 并拿回进程句柄用于隐藏控制台 / 等待退出。
+#[cfg(target_os = "windows")]
+mod elevated_launch {
+  use std::ffi::c_void;
+
+  #[repr(C)]
+  struct ShellExecuteInfoW {
+    cb_size: u32,
+    f_mask: u32,
+    hwnd: *mut c_void,
+    lp_verb: *const u16,
+    lp_file: *const u16,
+    lp_parameters: *const u16,
+    lp_directory: *const u16,
+    n_show: i32,
+    h_inst_app: *mut c_void,
+    lp_id_list: *mut c_void,
+    lp_class: *const u16,
+    hkey_class: *mut c_void,
+    dw_hot_key: u32,
+    h_icon: *mut c_void,
+    h_process: *mut c_void,
   }
-  eprintln!("Could not guess default terminal. Try setting the $TERMINAL environment variable.");
-  // If everything fails, default to xterm
-  "xterm".to_string()
-}
 
-#[cfg(target_os = "linux")]
-fn rawstrcmd(cmd: &Command) -> String {
-  format!("{:?}", cmd)
-}
-
-#[cfg(target_os = "linux")]
-fn strcmd(cmd: &Command) -> String {
-  format!("bash -c {:?}", rawstrcmd(cmd))
-}
-
-#[cfg(target_os = "linux")]
-pub trait AsRoot {
-  fn as_root(&self) -> Self;
-  fn as_root_gui(&self) -> Self;
-}
-
-#[cfg(target_os = "linux")]
-impl AsRoot for Command {
-  fn as_root(&self) -> Self {
-    let mut cmd = Command::new("sudo");
-    cmd.arg("--").arg("bash").arg("-c").arg(rawstrcmd(self));
-    cmd
+  #[link(name = "shell32")]
+  extern "system" {
+    fn ShellExecuteExW(info: *mut ShellExecuteInfoW) -> i32;
   }
-  fn as_root_gui(&self) -> Self {
-    let mut cmd = Command::new("pkexec");
-    cmd.arg("bash").arg("-c").arg(rawstrcmd(self));
-    cmd
+  #[link(name = "kernel32")]
+  extern "system" {
+    fn GetProcessId(process: *mut c_void) -> u32;
   }
-}
 
-#[cfg(target_os = "linux")]
-trait InTerminalEmulator {
-  fn in_terminal(&self) -> Self;
-  fn in_terminal_noclose(&self) -> Self;
-}
-#[cfg(target_os = "linux")]
-impl InTerminalEmulator for Command {
-  fn in_terminal(&self) -> Self {
-    let mut cmd = Command::new(guess_user_terminal());
-    cmd.arg("-e").arg(strcmd(self));
-    cmd
+  fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
   }
-  fn in_terminal_noclose(&self) -> Self {
-    let mut cmd = Command::new(guess_user_terminal());
-    cmd.arg("--noclose");
-    cmd.arg("-e").arg(strcmd(self));
-    cmd
-  }
-}
 
-#[cfg(target_os = "linux")]
-pub trait SpawnItsFineReally {
-  fn spawn_its_fine_really(&mut self, msg: &str) -> anyhow::Result<()>;
-}
+  pub fn spawn(
+    path: &str,
+    args: Option<&str>,
+    directory: Option<&std::path::Path>,
+  ) -> Result<(isize, u32), String> {
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
+    const SEE_MASK_NOASYNC: u32 = 0x0000_0100;
+    const SW_SHOWNORMAL: i32 = 1;
 
-#[cfg(target_os = "linux")]
-impl SpawnItsFineReally for Command {
-  fn spawn_its_fine_really(&mut self, msg: &str) -> anyhow::Result<()> {
-    let res = self.status();
-    let Ok(status) = res else {
-      let error = res.unwrap_err();
-      println!("{}: {}", msg, &error);
-      return Err(error.into());
+    let verb = wide("runas");
+    let file = wide(path);
+    let parameters = args.filter(|args| !args.trim().is_empty()).map(wide);
+    let dir = directory.map(|path| wide(&path.to_string_lossy()));
+
+    let mut info = ShellExecuteInfoW {
+      cb_size: std::mem::size_of::<ShellExecuteInfoW>() as u32,
+      f_mask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+      hwnd: std::ptr::null_mut(),
+      lp_verb: verb.as_ptr(),
+      lp_file: file.as_ptr(),
+      lp_parameters: parameters.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()),
+      lp_directory: dir.as_ref().map_or(std::ptr::null(), |value| value.as_ptr()),
+      n_show: SW_SHOWNORMAL,
+      h_inst_app: std::ptr::null_mut(),
+      lp_id_list: std::ptr::null_mut(),
+      lp_class: std::ptr::null(),
+      hkey_class: std::ptr::null_mut(),
+      dw_hot_key: 0,
+      h_icon: std::ptr::null_mut(),
+      h_process: std::ptr::null_mut(),
     };
-    if !status.success() {
-      println!("{}: {}", msg, status);
-      Err(anyhow::anyhow!("{}: {}", msg, status))
-    } else {
+
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok == 0 {
+      return Err(std::io::Error::last_os_error().to_string());
+    }
+    if info.h_process.is_null() {
+      return Err("提权启动未返回进程句柄".into());
+    }
+    let pid = unsafe { GetProcessId(info.h_process) };
+    Ok((info.h_process as isize, pid))
+  }
+}
+
+#[cfg(target_os = "windows")]
+async fn launch_game(
+  path: &str,
+  args: Option<&str>,
+  working_dir: Option<&std::path::Path>,
+  run_as_user: bool,
+) -> Result<(), String> {
+  use std::os::windows::process::CommandExt;
+
+  let mut command = Command::new(path);
+  let game_proxy = crate::proxy::game_proxy_url()?;
+  crate::game_environment::apply(&mut command, game_proxy.as_deref(), run_as_user);
+
+  if let Some(dir) = working_dir {
+    command.current_dir(dir);
+  }
+
+  if let Some(args) = args {
+    if !args.trim().is_empty() {
+      command.raw_arg(args);
+    }
+  }
+
+  crate::game_lifecycle::reserve()?;
+  let preflight = async {
+    let executable = std::path::Path::new(path);
+    let version = crate::game_profile::detect(executable).ok();
+    if version.map_or(false, |version| version.is_34()) {
+      let server = crate::legacy34::installed_server(executable)?;
+      crate::address_check::region_list(&server, game_proxy.as_deref()).await
+    } else if let Some(proxy) = game_proxy.as_deref() {
+      crate::address_check::via_proxy(proxy).await.map(|_| ())
+    } else { Ok(()) }
+  }.await;
+  if let Err(error) = preflight {
+    crate::game_lifecycle::failed();
+    return Err(error);
+  }
+  if let Err(error) = crate::gimi::start_for_game(path.to_string()).await {
+    crate::game_lifecycle::failed();
+    return Err(format!("模型加载失败：{}", error));
+  }
+  let spawned = if run_as_user && is_elevated() {
+    crate::windows_launch::spawn_as_desktop_user(path, args, working_dir, game_proxy.as_deref())
+  } else {
+    match command.spawn() {
+      Ok(child) => Ok(crate::windows_launch::GameProcess::Child(child)),
+      // 游戏清单要求管理员权限，而启动器本身未提权：交给 UAC 提权启动。
+      Err(error) if error.raw_os_error() == Some(740) => {
+        if game_proxy.is_some() || crate::config::get_config().gimi_enabled.unwrap_or(false) {
+          // ShellExecute(run as administrator) cannot carry a child-only
+          // environment, and an unelevated hook cannot target an elevated game.
+          Err("游戏要求管理员权限。请以管理员身份运行浮世后重试，确保代理和模型加载正常。".into())
+        } else { elevated_launch::spawn(path, args, working_dir).map(|(handle, pid)| {
+          crate::windows_launch::GameProcess::Desktop {
+            handle: crate::windows_launch::DesktopProcess::from_handle(handle),
+            pid,
+          }
+        }) }
+      }
+      Err(error) => Err(error.to_string()),
+    }
+  };
+  match spawned {
+    Ok(mut child) => {
+      let pid = child.id();
+      crate::game_lifecycle::started();
+
+      std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+          // 每次枚举前检查句柄，只有确认退出后才清理补丁。
+          match child.try_wait() {
+            Ok(None) => (),
+            Ok(Some(status)) => {
+              println!("Game process {} exited: {}", pid, status);
+              break;
+            }
+            Err(e) => {
+              eprintln!("Failed to query game process {}: {}", pid, e);
+              std::thread::sleep(std::time::Duration::from_secs(1));
+              continue;
+            }
+          }
+          hide_console_window(pid);
+          let interval = if started.elapsed() < std::time::Duration::from_secs(4) {
+            20
+          } else {
+            200
+          };
+          std::thread::sleep(std::time::Duration::from_millis(interval));
+        }
+        crate::game_lifecycle::finished();
+      });
       Ok(())
     }
+    Err(e) => { crate::game_lifecycle::failed(); Err(format!("Failed to open program ({}): {}", path, e)) },
   }
 }
 
-#[tauri::command]
-pub fn run_program_args(path: String, args: Option<String>) {
-  match open::with(
-    format!("{}", args.unwrap_or_else(|| "".into())),
-    path.clone(),
-  ) {
-    Ok(_) => (),
-    Err(e) => println!("Failed to open program ({}): {}", &path, e),
-  };
-  return;
-}
-
-#[tauri::command]
-pub fn run_program(path: String, args: Option<String>) {
-  // Without unwrap_or, this can crash when UAC prompt is denied
-  match open::with(
-    format!("{} {}", path, args.unwrap_or_else(|| "".into())),
-    path.clone(),
-  ) {
-    Ok(_) => (),
-    Err(e) => println!("Failed to open program ({}): {}", &path, e),
-  };
-}
-
 #[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn run_program_relative(path: String, args: Option<String>) {
-  // Save the current working directory
-  let cwd = std::env::current_dir().unwrap();
+mod console_window {
+  const SW_HIDE: i32 = 0;
 
-  // Set the new working directory to the path before the executable
-  let mut path_buf = std::path::PathBuf::from(&path);
-  path_buf.pop();
+  #[link(name = "user32")]
+  extern "system" {
+    fn EnumWindows(
+      callback: Option<unsafe extern "system" fn(*mut core::ffi::c_void, isize) -> i32>,
+      lparam: isize,
+    ) -> i32;
+    fn GetWindowThreadProcessId(hwnd: *mut core::ffi::c_void, pid: *mut u32) -> u32;
+    fn GetClassNameW(hwnd: *mut core::ffi::c_void, buffer: *mut u16, max_count: i32) -> i32;
+    fn ShowWindow(hwnd: *mut core::ffi::c_void, cmd: i32) -> i32;
+  }
 
-  // Set new working directory
-  std::env::set_current_dir(&path_buf).unwrap();
+  unsafe extern "system" fn hide_matching_console(
+    hwnd: *mut core::ffi::c_void,
+    lparam: isize,
+  ) -> i32 {
+    let target = lparam as u32;
 
-  // Without unwrap_or, this can crash when UAC prompt is denied
-  open::that(format!("{} {}", &path, args.unwrap_or_else(|| "".into()))).unwrap_or(());
+    if target != 0 {
+      let mut pid: u32 = 0;
+      GetWindowThreadProcessId(hwnd, &mut pid);
 
-  // Restore the original working directory
-  std::env::set_current_dir(cwd).unwrap();
-}
+      if pid == target {
+        let mut buffer = [0u16; 64];
+        let len = GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
 
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn run_program_relative(path: String, args: Option<String>) {
-  // This program should not run as root
-  run_un_elevated(path, args)
-}
+        if len > 0 {
+          let class = String::from_utf16_lossy(&buffer[..len as usize]);
 
-#[tauri::command]
-pub fn run_command(program: &str, args: Vec<&str>, relative: Option<bool>) {
-  let prog = program.to_string();
-  let args = args.iter().map(|s| s.to_string()).collect::<Vec<String>>();
-
-  // Commands should not block (this is for the reshade injector mostly)
-  std::thread::spawn(move || {
-    // Save the current working directory
-    let cwd = std::env::current_dir().unwrap();
-
-    if relative.unwrap_or(false) {
-      // Set the new working directory to the path before the executable
-      let mut path_buf = std::path::PathBuf::from(&prog);
-      path_buf.pop();
-
-      // Set new working directory
-      std::env::set_current_dir(&path_buf).unwrap();
-    }
-
-    // Run the command
-    let mut command = Command::new(&prog);
-    command.args(&args);
-    command.spawn().unwrap();
-
-    // Restore the original working directory
-    std::env::set_current_dir(cwd).unwrap();
-  });
-}
-
-#[tauri::command]
-pub fn run_jar(path: String, execute_in: String, java_path: String) {
-  let command = if java_path.is_empty() {
-    format!("java -jar \"{}\"", path)
-  } else {
-    format!("\"{}\" -jar \"{}\"", java_path, path)
-  };
-
-  println!("Launching .jar with command: {}", &command);
-
-  // Open the program from the specified path.
-  #[cfg(not(target_os = "linux"))]
-  match open::with(
-    format!("/k cd /D \"{}\" & {}", &execute_in, &command),
-    "C:\\Windows\\System32\\cmd.exe",
-  ) {
-    Ok(_) => (),
-    Err(e) => println!("Failed to open jar ({} from {}): {}", &path, &execute_in, e),
-  };
-  #[cfg(target_os = "linux")]
-  thread::spawn(move || {
-    match Command::new(guess_user_terminal())
-      .arg("-e")
-      .arg(command)
-      .current_dir(execute_in.clone())
-      .spawn()
-    {
-      Ok(mut handler) => {
-        // Prevent creation of zombie processes
-        handler
-          .wait()
-          .expect("Grasscutter exited with non-zero exit code");
-      }
-      Err(e) => println!("Failed to open jar ({} from {}): {}", &path, &execute_in, e),
-    }
-  });
-}
-
-#[cfg(not(target_os = "linux"))]
-#[tauri::command]
-pub fn run_jar_root(_path: String, _execute_in: String, _java_path: String) {
-  panic!("Not implemented");
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn run_jar_root(path: String, execute_in: String, java_path: String) {
-  let mut command = if java_path.is_empty() {
-    Command::new("java")
-  } else {
-    Command::new(java_path)
-  };
-  command.arg("-jar").arg(&path).current_dir(&execute_in);
-
-  println!("Launching .jar with command: {}", strcmd(&command));
-
-  // Open the program from the specified path.
-  thread::spawn(move || {
-    match command.as_root_gui().in_terminal().spawn() {
-      Ok(mut handler) => {
-        // Prevent creation of zombie processes
-        handler
-          .wait()
-          .expect("Grasscutter exited with non-zero exit code");
-      }
-      Err(e) => println!("Failed to open jar ({} from {}): {}", &path, &execute_in, e),
-    }
-  });
-}
-
-#[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn run_un_elevated(path: String, args: Option<String>) {
-  // Open the program non-elevated.
-  match open::with(
-    format!(
-      "cmd /min /C \"set __COMPAT_LAYER=RUNASINVOKER && start \"\" \"{}\"\" {}",
-      path,
-      args.unwrap_or_else(|| "".into())
-    ),
-    "C:\\Windows\\System32\\cmd.exe",
-  ) {
-    Ok(_) => (),
-    Err(e) => println!("Failed to open program ({}): {}", &path, e),
-  };
-}
-
-#[cfg(target_os = "linux")]
-fn aagl_wine_run<P: AsRef<Path>>(path: P, args: Option<String>) -> Command {
-  let config = Config::get().unwrap();
-  let wine = config.get_selected_wine().unwrap().unwrap();
-  let wine_run = wine
-    .to_wine(
-      config.components.path,
-      Some(config.game.wine.builds.join(&wine.name)),
-    )
-    .with_prefix(config.game.wine.prefix)
-    .with_loader(WineLoader::Current)
-    .with_arch(WineArch::Win64);
-  let env: Vec<(String, String)> = config
-    .game
-    .wine
-    .sync
-    .get_env_vars()
-    .clone()
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect();
-  use anime_launcher_sdk::components::wine::UnifiedWine::*;
-  let wined = match wine_run {
-    Default(wine) => wine,
-    Proton(proton) => proton.wine().clone(),
-  };
-  let mut cmd = Command::new(&wined.binary);
-  cmd.arg(path.as_ref()).envs(wined.get_envs()).envs(env);
-  if let Some(args) = args {
-    let mut args: Vec<String> = args.split(' ').map(|x| x.to_string()).collect();
-    cmd.args(&mut args);
-  };
-  cmd
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn run_un_elevated(path: String, args: Option<String>) {
-  let path = Path::new(&path);
-  let exec_name = path.file_name().unwrap().to_str().unwrap();
-  if exec_name == ["Yuan", "Shen", ".exe"].join("").as_str()
-    || exec_name == ["Gen", "shin", "Impact", ".exe"].join("").as_str()
-  {
-    let game_thread = thread::spawn(|| {
-      'statechk: {
-        let state = LauncherState::get_from_config(|_| {});
-        let Ok(state) = state else {
-          println!("Failed to get state: {}", state.unwrap_err());
-          break 'statechk;
-        };
-        use anime_launcher_sdk::genshin::states::LauncherState::*;
-        match state {
-          FolderMigrationRequired { from, .. } => Err(format!(
-            "A folder migration is required ({:?} needs to be moved)",
-            from
-          )),
-          WineNotInstalled => Err("Wine is not installed".to_string()),
-          PrefixNotExists => Err("The Wine prefix does not exist".to_string()),
-          GameNotInstalled(_) => Err("The game is not installed".to_string()),
-          _ => Ok(()),
+          if class == "ConsoleWindowClass" {
+            ShowWindow(hwnd, SW_HIDE);
+          }
         }
-        .expect("Can't launch game. Check the other launcher.");
       }
-      if let Err(e) = game::run() {
-        println!("An error occurred while running the game: {}", e);
-      }
-    });
-    {
-      let mut game_thead_lock = AAGL_THREAD.lock().unwrap();
-      game_thead_lock.replace(game_thread);
     }
-    return;
+
+    1
   }
-  // Run exe with wine
-  if path.extension().unwrap() == "exe" {
-    let path = path.to_owned().clone();
-    thread::spawn(move || {
-      let _ = aagl_wine_run(&path, args)
-        .current_dir(path.parent().unwrap())
-        .in_terminal()
-        .spawn_its_fine_really(&format!(
-          "Failed to open program ({})",
-          path.to_str().unwrap()
-        ));
-    });
+
+  pub fn hide_console_window(pid: u32) {
+    unsafe {
+      EnumWindows(Some(hide_matching_console), pid as isize);
+    }
   }
-  println!(
-    "Can't run {:?}. Running this type of file is not supported yet.",
-    path
-  );
 }
+
+#[cfg(target_os = "windows")]
+use console_window::hide_console_window;
 
 #[tauri::command]
 pub fn open_in_browser(url: String) {
@@ -372,77 +266,6 @@ pub fn open_in_browser(url: String) {
     Ok(_) => (),
     Err(e) => println!("Failed to open URL: {}", e),
   };
-}
-
-#[tauri::command]
-pub fn install_location() -> String {
-  let mut exe_path = std::env::current_exe().unwrap();
-
-  #[cfg(windows)]
-  {
-    // Get the path to the executable.
-    exe_path.pop();
-
-    return exe_path.to_str().unwrap().to_string();
-  }
-  #[cfg(target_os = "linux")]
-  {
-    let bin_name = exe_path.file_name().unwrap().to_str().unwrap().to_string();
-    exe_path.pop();
-    if exe_path.starts_with("/usr/bin") {
-      let mut path = PathBuf::from("/usr/lib");
-      path.push(bin_name);
-      path
-    } else {
-      exe_path
-    }
-    .to_str()
-    .unwrap()
-    .to_string()
-  }
-}
-
-#[tauri::command]
-pub fn set_migoto_delay(migoto_path: String) -> bool {
-  let mut migoto_pathbuf = PathBuf::from(migoto_path);
-
-  migoto_pathbuf.pop();
-  migoto_pathbuf.push("d3dx.ini");
-
-  let mut conf = match Ini::load_from_file(&migoto_pathbuf) {
-    Ok(c) => {
-      println!("Loaded migoto ini");
-      c
-    }
-    Err(e) => {
-      println!("Error loading migoto config: {}", e);
-      return false;
-    }
-  };
-
-  // Set options
-  conf.with_section(Some("Loader")).set("delay", "20");
-  conf
-    .with_section(Some("Include"))
-    .set("include", "ShaderFixes\\help.ini");
-
-  // Write file
-  match conf.write_to_file_opt(
-    &migoto_pathbuf,
-    ini::WriteOption {
-      escape_policy: (ini::EscapePolicy::Nothing),
-      line_separator: (ini::LineSeparator::SystemDefault),
-    },
-  ) {
-    Ok(_) => {
-      println!("Wrote delay!");
-      true
-    }
-    Err(e) => {
-      println!("Error writing delay: {}", e);
-      false
-    }
-  }
 }
 
 #[cfg(windows)]
@@ -476,7 +299,7 @@ pub fn wipe_registry(exec_name: String) {
   }
 
   let hsr_settings =
-    match Hive::CurrentUser.open(format!("Software\\Cognosphere\\Star Rail"), Security::Write) {
+    match Hive::CurrentUser.open("Software\\Cognosphere\\Star Rail".to_string(), Security::Write) {
       Ok(s) => s,
       Err(e) => {
         println!("Error getting registry setting: {}", e);
@@ -493,170 +316,9 @@ pub fn wipe_registry(exec_name: String) {
   }
 }
 
-#[cfg(windows)]
-#[tauri::command]
-pub fn service_status(service: String) -> bool {
-  let manager = match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-    Ok(manager) => manager,
-    Err(_e) => return false,
-  };
-  let my_service = match manager.open_service(service.clone(), ServiceAccess::QUERY_STATUS) {
-    Ok(my_service) => my_service,
-    Err(_e) => {
-      println!("{} service not found! Not installed?", service);
-      return false;
-    }
-  };
-  let status_result = my_service.query_status();
-  if let Ok(..) = status_result {
-    let status = status_result.unwrap();
-    println!("{} service status: {:?}", service, status.current_state);
-    if status.current_state == Stopped {
-      // Start the service if it is stopped
-      start_service(service);
-    }
-    true
-  } else {
-    false
-  }
-}
-
-#[cfg(target_os = "linux")]
-fn to_linux_service_name(service: &str) -> Option<String> {
-  Some(format!(
-    "{}.service",
-    match service {
-      "MongoDB" => "mongod",
-      _ => return None,
-    }
-  ))
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn service_status(service: String) -> bool {
-  // Change Windows service name into Linux service name
-  let service_lnx = to_linux_service_name(&service);
-  if service_lnx.is_none() {
-    return false;
-  }
-  let service_lnx = service_lnx.unwrap();
-  let status = Command::new("systemctl")
-    .arg("is-active")
-    .arg(service_lnx)
-    .stdout(Stdio::null())
-    .status();
-  if status.is_err() {
-    return false;
-  }
-  let status = status.unwrap().success();
-  if status {
-    status
-  } else {
-    start_service(service)
-  }
-}
-
-#[cfg(windows)]
-#[tauri::command]
-pub fn start_service(service: String) -> bool {
-  println!("Starting service: {}", service);
-  let manager = match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-    Ok(manager) => manager,
-    Err(_e) => return false,
-  };
-  let my_service = match manager.open_service(service, ServiceAccess::START) {
-    Ok(my_service) => my_service,
-    Err(_e) => return false,
-  };
-  match my_service.start(&[OsStr::new("Started service!")]) {
-    Ok(_s) => true,
-    Err(_e) => return false,
-  };
-  true
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn start_service(service: String) -> bool {
-  println!("Starting service: {}", service);
-  let service_lnx = to_linux_service_name(&service);
-  if service_lnx.is_none() {
-    return false;
-  }
-  let service_lnx = service_lnx.unwrap();
-  Command::new("systemctl")
-    .arg("start")
-    .arg(service_lnx)
-    .spawn_its_fine_really(&format!("Failed to stop service {}", service))
-    .is_ok()
-}
-
-#[cfg(windows)]
-#[tauri::command]
-pub fn stop_service(service: String) -> bool {
-  println!("Stopping service: {}", service);
-  let manager = match ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-    Ok(manager) => manager,
-    Err(_e) => return false,
-  };
-  let my_service = match manager.open_service(service, ServiceAccess::STOP) {
-    Ok(my_service) => my_service,
-    Err(_e) => return false,
-  };
-  match my_service.stop() {
-    Ok(_s) => true,
-    Err(_e) => return false,
-  };
-  true
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn stop_service(service: String) -> bool {
-  println!("Stopping service: {}", service);
-  let service_lnx = to_linux_service_name(&service);
-  if service_lnx.is_none() {
-    return false;
-  }
-  let service_lnx = service_lnx.unwrap();
-  Command::new("systemctl")
-    .arg("stop")
-    .arg(service_lnx)
-    .spawn_its_fine_really(&format!("Failed to start service {}", service))
-    .is_ok()
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn wipe_registry(exec_name: String) {
-  println!("Wiping registry");
-  let regpath = format!("HKCU\\Software\\miHoYo\\{}", exec_name);
-  let mut cmd = aagl_wine_run("reg", None);
-  cmd.args([
-    "DELETE",
-    &regpath,
-    "/f",
-    "/v",
-    "MIHOYOSDK_ADL_PROD_OVERSEA_h1158948810",
-  ]);
-  let _ = cmd.spawn_its_fine_really("Error wiping registry");
-}
-
-#[cfg(target_os = "macos")]
-#[tauri::command]
-pub fn wipe_registry(_exec_name: String) {}
-
-#[cfg(windows)]
 #[tauri::command]
 pub fn is_elevated() -> bool {
   is_elevated::is_elevated()
-}
-
-#[cfg(unix)]
-#[tauri::command]
-pub fn is_elevated() -> bool {
-  sudo::check() == sudo::RunningAs::Root
 }
 
 #[tauri::command]
@@ -664,54 +326,9 @@ pub fn get_platform() -> &'static str {
   std::env::consts::OS
 }
 
-#[cfg(not(target_os = "linux"))]
-#[tauri::command]
-pub async fn jvm_add_cap(_java_path: String) -> bool {
-  panic!("Not implemented");
-}
-
-#[cfg(not(target_os = "linux"))]
-#[tauri::command]
-pub async fn jvm_remove_cap(_java_path: String) -> bool {
-  panic!("Not implemented");
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub async fn jvm_add_cap(java_path: String) -> bool {
-  let mut java_bin = if java_path.is_empty() {
-    which::which("java").expect("Java is not installed")
-  } else {
-    PathBuf::from(&java_path)
-  };
-  while java_bin.is_symlink() {
-    java_bin = java_bin.read_link().unwrap()
-  }
-  println!("Removing cap on {:?}", &java_bin);
-  Command::new("setcap")
-    .arg("CAP_NET_BIND_SERVICE=+eip")
-    .arg(java_bin)
-    .as_root_gui()
-    .spawn_its_fine_really(&format!("Failed to add cap to {}", java_path))
-    .is_ok()
-}
-
-#[cfg(target_os = "linux")]
-#[tauri::command]
-pub async fn jvm_remove_cap(java_path: String) -> bool {
-  let mut java_bin = if java_path.is_empty() {
-    which::which("java").expect("Java is not installed")
-  } else {
-    PathBuf::from(&java_path)
-  };
-  while java_bin.is_symlink() {
-    java_bin = java_bin.read_link().unwrap()
-  }
-  println!("Setting cap on {:?}", &java_bin);
-  Command::new("setcap")
-    .arg("-r")
-    .arg(java_bin)
-    .as_root_gui()
-    .spawn_its_fine_really(&format!("Failed to remove cap from {}", java_path))
-    .is_ok()
+/// 启动器安装目录（补丁等资源相对它查找）。
+pub fn install_location() -> String {
+  let mut exe_path = std::env::current_exe().unwrap();
+  exe_path.pop();
+  exe_path.to_str().unwrap().to_string()
 }
